@@ -65,6 +65,23 @@ def test_registry_seed_is_idempotent(registry_db: Path) -> None:
     assert keywords
 
 
+def test_registry_seed_keeps_user_selected_collector(registry_db: Path) -> None:
+    with create_session() as session:
+        seed_registry(session, sources_config_path=str(registry_db))
+        source = session.scalar(select(RegisteredSource).where(RegisteredSource.key == "promokood"))
+        assert source is not None
+        source.collector_type = "generic_web"
+        source.item_selector = ".coupon-card"
+        session.commit()
+
+    with create_session() as session:
+        seed_registry(session, sources_config_path=str(registry_db))
+        source = session.scalar(select(RegisteredSource).where(RegisteredSource.key == "promokood"))
+        assert source is not None
+        assert source.collector_type == "generic_web"
+        assert source.item_selector == ".coupon-card"
+
+
 def test_source_item_upsert_uses_external_id(registry_db: Path) -> None:
     with create_session() as session:
         source = create_source(

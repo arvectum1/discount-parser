@@ -80,7 +80,9 @@ def seed_registry(session: Session, *, sources_config_path: str) -> dict[str, in
             row.url = config.base_url
             row.platform = "promo_aggregator"
             row.source_type = "promo_aggregator"
-            row.collector_type = "legacy_adapter"
+            # The YAML file supplies the initial legacy adapter only.  Once a
+            # user configures CSS mappings in the UI, their explicit collector
+            # choice must survive routine registry seeding.
             sources_updated += 1
 
     telegram_created, telegram_updated = _seed_telegram_test_sources(session)
