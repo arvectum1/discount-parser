@@ -122,7 +122,7 @@ def test_cross_source_dedup_preserves_manual_override(sqlite_db: Path, monkeypat
 
     second = run_source(source_b)
     assert second.created == 0
-    assert second.updated == 1
+    assert second.duplicates == 1
 
     with create_session() as session:
         offers = session.scalars(select(Offer)).all()
