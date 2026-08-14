@@ -51,12 +51,25 @@ Remove-Item .\discount_parser.db, .\discount_parser.db-wal, .\discount_parser.db
 if (Test-Path .\discount_parser.db) { throw "Smoke database must not be packaged" }
 Pop-Location
 
-$Iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-if (-not (Test-Path $Iscc)) {
-  throw "Inno Setup 6 not found at $Iscc"
+# Strip build/CI artifacts from the staged payload so they never reach the
+# installer: bytecode caches, rejected-patch leftovers, and pytest caches.
+Get-ChildItem delivery\app -Recurse -Force -Directory -Filter __pycache__ -ErrorAction SilentlyContinue |
+  Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+Get-ChildItem delivery\app -Recurse -Force -Include *.pyc, *.rej, .pytest_cache -ErrorAction SilentlyContinue |
+  Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
+$IsccCandidates = @(
+  "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+  "C:\Program Files\Inno Setup 6\ISCC.exe",
+  "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+)
+$Iscc = Get-Command iscc.exe -ErrorAction SilentlyContinue
+$IsccPath = if ($Iscc) { $Iscc.Source } else { $IsccCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1 }
+if (-not $IsccPath) {
+  throw "Inno Setup 6 not found. Install Inno Setup 6 or place ISCC.exe in one of: $($IsccCandidates -join ', ')"
 }
 
-& $Iscc "packaging\windows\installer.iss"
+& $IsccPath "packaging\windows\installer.iss"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Copy-Item "packaging\windows\output\DiscountParser-Setup.exe" "delivery\DiscountParser-Setup.exe" -Force
 
