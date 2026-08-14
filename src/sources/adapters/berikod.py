@@ -17,12 +17,32 @@ _STOP_CODES = {"IMAGE", "КОД", "ПРОМОКОД", "ПРОМОКОДЫ"}
 class BerikodAdapter:
     key = "berikod"
 
-    def __init__(self, base_url: str, client: HttpClient | None = None) -> None:
+    def __init__(self, base_url: str, client: HttpClient | None = None, max_pages: int = 3) -> None:
         self.base_url = base_url
         self.client = client or HttpClient()
+        self.max_pages = max(1, min(max_pages, 5))
 
     def collect(self) -> list[RawOffer]:
-        return self.parse(self.client.get_text(self.base_url))
+        all_offers: list[RawOffer] = []
+        seen_ids: set[str] = set()
+
+        for page in range(1, self.max_pages + 1):
+            url = self.base_url if page == 1 else urljoin(self.base_url, f"?page={page}")
+            try:
+                html = self.client.get_text(url)
+                page_offers = self.parse(html)
+                if not page_offers:
+                    break
+                for offer in page_offers:
+                    if offer.external_id not in seen_ids:
+                        seen_ids.add(offer.external_id)
+                        all_offers.append(offer)
+            except Exception:
+                if page == 1:
+                    raise
+                break
+        return all_offers
+
 
     def parse(self, html: str) -> list[RawOffer]:
         soup = BeautifulSoup(html, "html.parser")

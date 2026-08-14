@@ -25,8 +25,10 @@ class RegistryRunResult:
     offer_signals: int = 0
     offers_created: int = 0
     offers_updated: int = 0
+    duplicates: int = 0
     ignored: int = 0
     errors: int = 0
+    duration_seconds: float = 0.0
     error: str | None = None
 
 def _stored_promo_code(session, source: Source, external_id: str) -> str | None:
@@ -98,6 +100,7 @@ def _keywords_for_source(session, source: RegisteredSource) -> list[SourceKeywor
 
 
 def collect_registered_source(source_id: int) -> RegistryRunResult:
+    started = datetime.now(UTC)
     with session_scope() as session:
         source = session.get(RegisteredSource, source_id)
         if source is None:
@@ -201,10 +204,12 @@ def collect_registered_source(source_id: int) -> RegistryRunResult:
                     },
                 )
                 created_offer = _persist_raw_offer(session, legacy_source, raw)
-                if created_offer:
+                if created_offer == "created":
                     result.offers_created += 1
-                else:
+                elif created_offer == "updated":
                     result.offers_updated += 1
+                else:
+                    result.duplicates += 1
                 item.processing_status = "processed"
                 item.processing_error = None
             except Exception as exc:
@@ -214,6 +219,7 @@ def collect_registered_source(source_id: int) -> RegistryRunResult:
                     item.processing_status = "failed"
                     item.processing_error = result.error[:4000]
 
+        result.duration_seconds = (datetime.now(UTC) - started).total_seconds()
         now = datetime.now(UTC)
         source.last_checked_at = now
         if result.errors:

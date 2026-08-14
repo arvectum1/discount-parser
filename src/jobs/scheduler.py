@@ -38,6 +38,7 @@ def collect_sources_job() -> None:
             "fetched": sum(item.fetched for item in legacy_results) + sum(item.fetched for item in registry_results),
             "created": sum(item.created for item in legacy_results) + sum(item.offers_created for item in registry_results),
             "updated": sum(item.updated for item in legacy_results) + sum(item.offers_updated for item in registry_results),
+            "duplicates": sum(item.duplicates for item in legacy_results) + sum(item.duplicates for item in registry_results),
             "errors": sum(item.errors for item in legacy_results) + sum(item.errors for item in registry_results),
             "registry_error": registry_error,
         },
@@ -124,9 +125,13 @@ def build_scheduler(
 
 
 def run_scheduler() -> None:
+    settings = get_settings()
+    from src.shared.logging import configure_logging
+    configure_logging(level=settings.log_level, log_format=settings.log_format, component="scheduler", enable_file=False)
     scheduler = build_scheduler()
     logger.info("scheduler_started", extra={"timezone": str(scheduler.timezone)})
     try:
         scheduler.start()
     except (KeyboardInterrupt, SystemExit):
         logger.info("scheduler_stopped")
+

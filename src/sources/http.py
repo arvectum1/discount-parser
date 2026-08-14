@@ -7,6 +7,13 @@ import httpx
 from src.shared.network import NetworkRouteError, network_router
 
 
+_DEFAULT_BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/128.0.0.0 Safari/537.36"
+)
+
+
 class HttpClient:
     def __init__(
         self,
@@ -17,8 +24,9 @@ class HttpClient:
     ) -> None:
         self.timeout_seconds = timeout_seconds
         self.retries = retries
-        self.user_agent = user_agent or "Mozilla/5.0 (compatible; DiscountParser/0.1)"
+        self.user_agent = user_agent or _DEFAULT_BROWSER_UA
         self.network_policy = network_policy
+
 
     def get_text(self, url: str) -> str:
         last_error: Exception | None = None

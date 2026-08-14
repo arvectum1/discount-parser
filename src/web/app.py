@@ -65,7 +65,9 @@ def _run_parse_thread(*, city: str | None = None, region: str | None = None) -> 
     _parse_state['city'] = city
     _parse_state['region'] = region
     try:
+        from src.modules.source_registry.runner import collect_registered_sources
         run_all(path=get_settings().sources_config_path, city=city, region=region)
+        collect_registered_sources()
     except Exception as exc:
         _parse_state['last_error'] = f'{type(exc).__name__}: {exc}'
     finally:

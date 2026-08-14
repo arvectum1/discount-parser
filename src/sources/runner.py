@@ -25,7 +25,9 @@ class RunResult:
     fetched: int = 0
     created: int = 0
     updated: int = 0
+    duplicates: int = 0
     errors: int = 0
+    duration_seconds: float = 0.0
     error: str | None = None
 
 
@@ -151,7 +153,8 @@ def _update_offer(session, offer: Offer, raw: RawOffer, normalized: NormalizedOf
     OfferRepository(session).update(offer, values)
 
 
-def _persist_raw_offer(session, source: Source, raw: RawOffer) -> bool:
+def _persist_raw_offer(session, source: Source, raw: RawOffer) -> str:
+    """Persist a raw offer, returning 'created', 'updated' or 'duplicate'."""
     now = datetime.now(UTC)
     normalized = normalize_raw_offer(raw)
     observation = session.scalar(
@@ -171,7 +174,7 @@ def _persist_raw_offer(session, source: Source, raw: RawOffer) -> bool:
             ensure_ascii=False,
         )
         session.flush()
-        return False
+        return "updated"
 
     match = find_existing_offer(session, normalized)
     repo = OfferRepository(session)
@@ -205,7 +208,7 @@ def _persist_raw_offer(session, source: Source, raw: RawOffer) -> bool:
         )
     )
     session.flush()
-    return match.offer is None
+    return "created" if match.offer is None else "duplicate"
 
 
 def _record_failed_collection(config: SourceConfig, error: Exception) -> RunResult:
@@ -218,6 +221,7 @@ def _record_failed_collection(config: SourceConfig, error: Exception) -> RunResu
 
 def run_source(config: SourceConfig, *, city: str | None = None, region: str | None = None) -> RunResult:
     config = _effective_config(config)
+    started = datetime.now(UTC)
     try:
         collected = build_adapter(config).collect()
     except Exception as exc:
@@ -235,18 +239,21 @@ def run_source(config: SourceConfig, *, city: str | None = None, region: str | N
         for raw in raw_offers:
             try:
                 with session.begin_nested():
-                    created = _persist_raw_offer(session, source, raw)
-                if created:
+                    outcome = _persist_raw_offer(session, source, raw)
+                if outcome == "created":
                     result.created += 1
-                else:
+                elif outcome == "updated":
                     result.updated += 1
+                else:
+                    result.duplicates += 1
             except Exception as exc:
                 result.errors += 1
                 errors.append(f"{raw.external_id}: {type(exc).__name__}: {exc}")
 
+        result.duration_seconds = (datetime.now(UTC) - started).total_seconds()
         parse_run.new_count = result.created
         parse_run.updated_count = result.updated
-        parse_run.duplicate_count = result.updated
+        parse_run.duplicate_count = result.duplicates
         parse_run.review_count = int(
             session.scalar(
                 select(func.count(func.distinct(Offer.id)))

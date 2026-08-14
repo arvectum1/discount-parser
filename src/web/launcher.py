@@ -56,6 +56,8 @@ def _uvicorn_logging_kwargs() -> dict[str, object]:
 
 def run_web_panel() -> None:
     settings = get_settings()
+    from src.shared.logging import configure_logging
+    configure_logging(level=settings.log_level, log_format=settings.log_format, component="web", enable_file=True)
     url = f'http://127.0.0.1:{settings.web_port}'
 
     # A repeated click on the desktop shortcut should focus/open the existing
