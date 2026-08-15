@@ -1,15 +1,18 @@
 $ErrorActionPreference = "Stop"
 Set-Location (Split-Path -Parent $PSScriptRoot)
 
-python -m pip install --upgrade pip
-python -m pip install -e ".[dev]"
+# Use Python 3.11 explicitly as per TZ requirements
+$Python311 = "py -3.11"
+
+$Python311 -m pip install --upgrade pip
+$Python311 -m pip install -e ".[dev]"
 
 Remove-Item -Recurse -Force dist-ui, dist-worker, build-ui, build-worker, delivery -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force delivery\app | Out-Null
 
 # Build UI application
 Write-Host "Building UI application..."
-pyinstaller --noconfirm --clean --onedir --noconsole `
+$Python311 -m PyInstaller --noconfirm --clean --onedir --noconsole `
   --distpath dist-ui `
   --workpath build-ui `
   --name DiscountParser `
@@ -37,7 +40,7 @@ Write-Host "UI build successful: $(Get-Item $uiExePath | Select-Object -ExpandPr
 
 # Build worker application
 Write-Host "Building worker application..."
-pyinstaller --noconfirm --clean --onefile --console `
+$Python311 -m PyInstaller --noconfirm --clean --onefile --console `
   --distpath dist-worker `
   --workpath build-worker `
   --name DiscountParserWorker `
