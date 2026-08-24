@@ -78,116 +78,131 @@ end;
 
 function ProbeUnlockedFile(FilePath: String): Boolean;
 var
-  Probe: TFileStream;
+  ProbePath: String;
 begin
   Result := True;
   if not FileExists(FilePath) then
-    exit;
-  try
-    Probe := TFileStream.Create(FilePath, fmOpenReadWrite or fmShareExclusive);
-    try
-      Result := True;
-    finally
-      Probe.Free;
-    end;
-  except
+    Exit;
+
+  ProbePath := FilePath + '.upgrade-probe';
+  if FileExists(ProbePath) then
+    DeleteFile(ProbePath);
+
+  if not RenameFile(FilePath, ProbePath) then
+  begin
+    Result := False;
+    Exit;
+  end;
+
+  if not RenameFile(ProbePath, FilePath) then
+  begin
+    Log('DP-FB4: critical: could not restore upgrade probe file ' + FilePath);
     Result := False;
   end;
 end;
 
-function WaitForUnlockedFile(FilePath: String; TimeoutMs: Cardinal): Boolean;
+function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
-  Started: Cardinal;
+  AppExe: String;
+  WorkerExe: String;
 begin
-  Started := GetTickCount();
-  repeat
-    if ProbeUnlockedFile(FilePath) then
-    begin
-      Result := True;
-      exit;
-    end;
-    Sleep(100);
-  until GetTickCount() - Started >= TimeoutMs;
-  Result := ProbeUnlockedFile(FilePath);
-end;
+  Result := '';
+  AppExe := ExpandConstant('{app}\{#MyAppExeName}');
+  WorkerExe := ExpandConstant('{app}\{#MyWorkerExeName}');
 
-procedure StopProductProcessesBestEffort();
-var
-  WorkerPath: String;
-  AppPath: String;
-begin
-  AppPath := ExpandConstant('{app}\{#MyAppExeName}');
-  WorkerPath := ExpandConstant('{app}\{#MyWorkerExeName}');
+  // Restart Manager normally closes the product, but customer upgrade evidence
+  // showed that a stale/background image can survive long enough for the file
+  // replacement to fail with Windows error 5. Kill only our two owned images,
+  // wait for handles to drain, then probe both files before Setup starts copying.
+  StopProductProcess('{#MyWorkerExeName}');
+  StopProductProcess('{#MyAppExeName}');
+  Sleep(1200);
 
-  if FileExists(AppPath) and not ProbeUnlockedFile(AppPath) then
-    StopProductProcess('{#MyAppExeName}');
-  if FileExists(WorkerPath) and not ProbeUnlockedFile(WorkerPath) then
-    StopProductProcess('{#MyWorkerExeName}');
+  if not ProbeUnlockedFile(AppExe) then
+  begin
+    Result := 'Не удалось подготовить Discount Parser к обновлению. Перезагрузите Windows и снова запустите установщик до запуска программы.';
+    Exit;
+  end;
 
-  if FileExists(AppPath) and not WaitForUnlockedFile(AppPath, 10000) then
-    Log('DP-FB4: app executable is still locked after stop attempt');
-  if FileExists(WorkerPath) and not WaitForUnlockedFile(WorkerPath, 10000) then
-    Log('DP-FB4: worker executable is still locked after stop attempt');
-end;
-
-procedure CurStepChanged(CurStep: TSetupStep);
-begin
-  if CurStep = ssInstall then
-    StopProductProcessesBestEffort();
-end;
-
-function DesktopShortcutExists(): Boolean;
-begin
-  Result := FileExists(DesktopShortcutPath());
+  if not ProbeUnlockedFile(WorkerExe) then
+  begin
+    Result := 'Не удалось подготовить фоновый процесс Discount Parser к обновлению. Перезагрузите Windows и снова запустите установщик.';
+    Exit;
+  end;
 end;
 
 procedure RemoveDesktopShortcutBestEffort();
+var
+  ShortcutPath: String;
 begin
-  try
-    if DesktopShortcutExists() then
-    begin
-      DeleteFile(DesktopShortcutPath());
-      Log('DP-WIN-P0.2: removed old Desktop shortcut');
-    end;
-  except
-    Log('DP-WIN-P0.2: failed to remove old Desktop shortcut, continuing');
+  ShortcutPath := DesktopShortcutPath();
+
+  if FileExists(ShortcutPath) then
+  begin
+    if DeleteFile(ShortcutPath) then
+      Log('DP-WIN-P0.2: removed existing Discount Parser desktop shortcut')
+    else
+      Log('DP-WIN-P0.2: warning: could not remove existing desktop shortcut; continuing installation');
   end;
 end;
 
 procedure CreateDesktopShortcutBestEffort();
 var
-  LinkPath: String;
+  TargetPath: String;
+  ShortcutPath: String;
+  CreatedShortcut: String;
 begin
+  TargetPath := ExpandConstant('{app}\{#MyAppExeName}');
+  ShortcutPath := DesktopShortcutPath();
+
+  // DP-CUST-009: on an upgrade Inno Setup can remember that the optional
+  // desktop task was not selected. The previous implementation deleted an
+  // existing shortcut *before* checking that task and then exited, making the
+  // customer's working icon disappear. If the task is not selected, preserve
+  // whatever shortcut the user already has. If it is selected, refresh it.
   if not WizardIsTaskSelected('desktopicon') then
   begin
-    Log('DP-WIN-P0.2: Desktop shortcut task not selected; preserving existing shortcut');
-    exit;
+    Log('DP-CUST-009: desktop shortcut task not selected; preserving existing shortcut');
+    Exit;
   end;
 
-  LinkPath := DesktopShortcutPath();
   RemoveDesktopShortcutBestEffort();
+
+  if not FileExists(TargetPath) then
+  begin
+    Log('DP-WIN-P0.2: desktop shortcut skipped because installed executable is missing: ' + TargetPath);
+    Exit;
+  end;
+
   try
-    CreateShellLink(
-      LinkPath,
-      'Discount Parser',
-      ExpandConstant('{app}\{#MyAppExeName}'),
+    CreatedShortcut := CreateShellLink(
+      ShortcutPath,
+      '{#MyAppName}',
+      TargetPath,
       '',
       ExpandConstant('{app}'),
       '',
       0,
-      SW_SHOWNORMAL
-    );
-    Log('DP-WIN-P0.2: Desktop shortcut created');
+      SW_SHOWNORMAL);
+    Log('DP-WIN-P0.2: created desktop shortcut: ' + CreatedShortcut);
   except
-    Log('DP-WIN-P0.2: Desktop shortcut creation failed, continuing install');
+    Log('DP-WIN-P0.2: warning: desktop shortcut creation failed; installation continues: ' + GetExceptionMessage);
   end;
 end;
 
-procedure CurPageChanged(CurPageID: Integer);
+procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  if CurPageID = wpFinished then
+  if CurStep = ssPostInstall then
     CreateDesktopShortcutBestEffort();
 end;
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Запустить Discount Parser"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyWorkerExeName}"; Parameters: "migrate"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated
+Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Description: "Открыть Discount Parser"; Flags: nowait postinstall skipifsilent
+
+[UninstallDelete]
+; Desktop link is created manually from [Code], therefore it is explicitly
+; owned and removed here. `files` intentionally does not remove a directory
+; that merely collides with the .lnk name (used by the resilience gate).
+Type: files; Name: "{userdesktop}\{#MyDesktopShortcutName}"
+Type: filesandordirs; Name: "{app}\_internal"
