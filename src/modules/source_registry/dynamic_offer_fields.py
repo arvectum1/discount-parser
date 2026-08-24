@@ -6,6 +6,7 @@ from src.sources.base import RawOffer
 
 
 _PATCH_MARKER = "_dp_cust_011_dynamic_offer_fields"
+_QUALITY_MARKER = "_dp_cust_015_quality_gate"
 
 
 def _merchant_from_payload(raw: RawOffer) -> str | None:
@@ -22,11 +23,10 @@ def _merchant_from_payload(raw: RawOffer) -> str | None:
 def install_dynamic_offer_fields() -> None:
     """Let multi-merchant registry sources carry merchant per detail page.
 
-    The registry runner historically copied ``source.merchant`` into every
-    RawOffer, which is correct for one-merchant sources but wrong for aggregator
-    category pages. The follow collector stores the merchant found on each
-    internal detail page in the source-item payload. Apply it immediately before
-    persistence without changing the legacy adapter contract.
+    The wrapper deliberately preserves the DP-CUST-015 quality-gate marker when
+    it wraps the universal persistence gate. This makes patch composition
+    explicit: dynamic merchant enrichment may run before persistence, but it
+    must never bypass the universal offer-quality checks.
     """
     from src.modules.source_registry import runner as registry_runner
     from src.sources import runner as legacy_runner
@@ -42,6 +42,8 @@ def install_dynamic_offer_fields() -> None:
         return current(session, source, raw)
 
     setattr(persist_with_dynamic_fields, _PATCH_MARKER, True)
+    if getattr(current, _QUALITY_MARKER, False):
+        setattr(persist_with_dynamic_fields, _QUALITY_MARKER, True)
     registry_runner._persist_raw_offer = persist_with_dynamic_fields
     # Keep the module-level helper coherent for any later imports/callers.
     legacy_runner._persist_raw_offer = persist_with_dynamic_fields
