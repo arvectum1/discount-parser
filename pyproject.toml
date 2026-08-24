@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "discount-parser"
-version = "0.1.12"
+version = "0.1.13"
 description = "Discount and promo-code aggregation pipeline with Telegram publishing"
 readme = "README.md"
 requires-python = ">=3.11"
