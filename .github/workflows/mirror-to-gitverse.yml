@@ -17,9 +17,6 @@ concurrency:
   group: mirror-to-gitverse
   cancel-in-progress: false
 
-env:
-  GITVERSE_REPOSITORY: discount-parser-github-mirror
-
 jobs:
   mirror:
     name: Mirror repository
@@ -30,123 +27,46 @@ jobs:
       - name: Validate configuration
         env:
           GITVERSE_TOKEN: ${{ secrets.GITVERSE_TOKEN }}
+          GITVERSE_REPOSITORY: ${{ vars.GITVERSE_REPO }}
         run: |
           set -euo pipefail
           test -n "$GITVERSE_TOKEN" || { echo "::error::GITVERSE_TOKEN is missing"; exit 1; }
-          test "$GITVERSE_REPOSITORY" = "discount-parser-github-mirror" || { echo "::error::Unexpected GitVerse target"; exit 1; }
+          test -n "$GITVERSE_REPOSITORY" || { echo "::error::GITVERSE_REPO is missing"; exit 1; }
 
-      - name: Clone canonical GitHub repository
+      - name: Clone GitHub repository as mirror
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           git clone --mirror \
-            "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPOSITORY}.git" \
+            "https://x-access-token:$GH_TOKEN@github.com/$GH_REPOSITORY.git" \
             repository.git
 
-      - name: Preflight GitVerse main lineage
+      - name: Push branches and tags to GitVerse
         env:
           GITVERSE_TOKEN: ${{ secrets.GITVERSE_TOKEN }}
+          GITVERSE_REPOSITORY: ${{ vars.GITVERSE_REPO }}
         run: |
           set -euo pipefail
           cd repository.git
 
           git remote add gitverse \
-            "https://arvectum:${GITVERSE_TOKEN}@gitverse.ru/arvectum/${GITVERSE_REPOSITORY}.git"
+            "https://arvectum:$GITVERSE_TOKEN@gitverse.ru/arvectum/$GITVERSE_REPOSITORY.git"
 
-          if git ls-remote --exit-code --heads gitverse main >/dev/null 2>&1; then
-            git fetch --no-tags gitverse \
-              refs/heads/main:refs/remotes/gitverse/main
-
-            if ! git merge-base --is-ancestor \
-              refs/remotes/gitverse/main refs/heads/main; then
-              echo "::error::GitVerse main is ahead of or diverged from canonical GitHub main. Refusing to mirror. Reconcile repository history first."
-              echo "GitHub main: $(git rev-parse refs/heads/main)"
-              echo "GitVerse main: $(git rev-parse refs/remotes/gitverse/main)"
-              exit 1
-            fi
-          fi
-
-      - name: Push canonical main and preserve divergent replica refs
-        env:
-          GITVERSE_TOKEN: ${{ secrets.GITVERSE_TOKEN }}
-        run: |
-          set -euo pipefail
-          cd repository.git
-
-          # GitHub is canonical. GitVerse is a replica. Never prune, delete,
-          # or force-update replica refs.
-          git fetch --no-tags gitverse \
-            '+refs/heads/*:refs/remotes/gitverse/*'
-
-          # main must advance only by a normal fast-forward after the lineage
-          # preflight above.
-          git push gitverse \
-            refs/heads/main:refs/heads/main
-
-          skipped_branches=0
-          pushed_branches=0
-
-          while IFS= read -r branch; do
-            test "$branch" = "main" && continue
-
-            local_ref="refs/heads/${branch}"
-            remote_ref="refs/remotes/gitverse/${branch}"
-
-            if git show-ref --verify --quiet "$remote_ref"; then
-              if git merge-base --is-ancestor "$remote_ref" "$local_ref"; then
-                git push gitverse \
-                  "$local_ref:refs/heads/${branch}"
-                pushed_branches=$((pushed_branches + 1))
-              else
-                echo "::warning::Preserving divergent GitVerse branch '${branch}' without force-update."
-                skipped_branches=$((skipped_branches + 1))
-              fi
-            else
-              git push gitverse \
-                "$local_ref:refs/heads/${branch}"
-              pushed_branches=$((pushed_branches + 1))
-            fi
-          done < <(git for-each-ref --format='%(refname:strip=2)' refs/heads)
-
-          skipped_tags=0
-          pushed_tags=0
-
-          while IFS= read -r tag; do
-            local_ref="refs/tags/${tag}"
-            local_sha="$(git rev-parse "$local_ref")"
-            remote_sha="$(git ls-remote --tags --refs gitverse "$local_ref" | awk '{print $1}')"
-
-            if test -z "$remote_sha"; then
-              git push gitverse \
-                "$local_ref:$local_ref"
-              pushed_tags=$((pushed_tags + 1))
-            elif test "$remote_sha" = "$local_sha"; then
-              :
-            else
-              echo "::warning::Preserving divergent GitVerse tag '${tag}' without force-update."
-              skipped_tags=$((skipped_tags + 1))
-            fi
-          done < <(git for-each-ref --format='%(refname:strip=2)' refs/tags)
-
-          {
-            echo "MIRROR_PUSHED_BRANCHES=${pushed_branches}"
-            echo "MIRROR_SKIPPED_BRANCHES=${skipped_branches}"
-            echo "MIRROR_PUSHED_TAGS=${pushed_tags}"
-            echo "MIRROR_SKIPPED_TAGS=${skipped_tags}"
-          } >> "$GITHUB_ENV"
+          # Mirror only normal branches and tags.
+          # GitHub-specific refs/pull/* are intentionally excluded.
+          git push --force --prune gitverse \
+            'refs/heads/*:refs/heads/*' \
+            'refs/tags/*:refs/tags/*'
 
       - name: Summary
         if: success()
+        env:
+          GITVERSE_REPOSITORY: ${{ vars.GITVERSE_REPO }}
         run: |
-          echo "### GitVerse replica updated" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Canonical source: \`${GITHUB_REPOSITORY}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Replica target: \`arvectum/${GITVERSE_REPOSITORY}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Mode: non-destructive (no force, no prune, divergent replica refs preserved)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Pushed non-main branches: \`${MIRROR_PUSHED_BRANCHES:-0}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Preserved divergent branches: \`${MIRROR_SKIPPED_BRANCHES:-0}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Pushed new tags: \`${MIRROR_PUSHED_TAGS:-0}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Preserved divergent tags: \`${MIRROR_SKIPPED_TAGS:-0}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Trigger: \`${GITHUB_EVENT_NAME}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- SHA: \`${GITHUB_SHA}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "### GitVerse mirror updated" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Source: \${GITHUB_REPOSITORY}\" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Target: \rvectum/$GITVERSE_REPOSITORY\" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Trigger: \${GITHUB_EVENT_NAME}\" >> "$GITHUB_STEP_SUMMARY"
+          echo "- SHA: \${GITHUB_SHA}\" >> "$GITHUB_STEP_SUMMARY"
