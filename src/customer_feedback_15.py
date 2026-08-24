@@ -19,6 +19,18 @@ from src.sources import runner as sources_runner
 
 _PATCHED = False
 _ORIGINAL_PERSIST = sources_runner._persist_raw_offer
+_GENERIC_TITLES = {"предложение", "акция", "скидка", "промокод", "спецпредложение"}
+
+
+def _seed_title(payload) -> str | None:
+    if payload.title and str(payload.title).strip().casefold() not in _GENERIC_TITLES:
+        return str(payload.title).strip()
+    for raw_line in str(payload.text or "").splitlines():
+        line = " ".join(raw_line.split()).strip(" •\t")
+        if not line or line.casefold().strip(" .:-—") in _GENERIC_TITLES:
+            continue
+        return line[:1000]
+    return payload.title
 
 
 def _persist_with_quality_gate(session, source, raw):
@@ -126,7 +138,11 @@ def _collect_registered_source_v15(source_id: int):
                 )
                 if resolved:
                     metadata["promo_code"] = resolved
-                payload_for_structuring = replace(payload, raw_payload=metadata)
+                payload_for_structuring = replace(
+                    payload,
+                    title=_seed_title(payload),
+                    raw_payload=metadata,
+                )
 
                 batch = structure_registry_payload(
                     payload_for_structuring,
