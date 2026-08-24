@@ -109,7 +109,7 @@ def test_legacy_registry_repair_migration_is_present() -> None:
 
 def test_windows_installer_preflights_owned_process_locks() -> None:
     installer = (ROOT / 'packaging' / 'windows' / 'installer.iss').read_text(encoding='utf-8')
-    assert '#define MyAppVersion "0.1.12"' in installer
+    assert '#define MyAppVersion "0.1.13"' in installer
     assert 'function PrepareToInstall(var NeedsRestart: Boolean): String;' in installer
     assert "StopProductProcess('{#MyWorkerExeName}')" in installer
     assert "StopProductProcess('{#MyAppExeName}')" in installer
