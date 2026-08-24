@@ -1,5 +1,5 @@
 #define MyAppName "Discount Parser"
-#define MyAppVersion "0.1.13"
+#define MyAppVersion "0.1.14"
 #define MyAppExeName "DiscountParser.exe"
 #define MyWorkerExeName "DiscountParserWorker.exe"
 #define MyDesktopShortcutName "Discount Parser.lnk"
