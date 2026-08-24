@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from decimal import Decimal
 
 from src.core import offer_structuring as core
 from src.sources.base import RawOffer
@@ -42,12 +41,29 @@ def _has_concrete_benefit(raw: RawOffer) -> bool:
     )
 
 
-def _auto_ready(result: core.StructuredOffer) -> bool:
+def _calibrated_issues(result: core.StructuredOffer) -> tuple[str, ...]:
+    issues = list(result.issues)
+    metadata = dict(result.raw.raw_payload or {})
+
+    # Generic offer detectors may pre-fill old/new price before the universal
+    # structurer sees the block. In that case DP-CUST-015 no longer enters its
+    # own multi-price ambiguity branch. Re-check the source text here so a
+    # three-price catalogue fragment can never become a confident two-price
+    # offer merely because the first two values were selected upstream.
+    if not metadata.get("structured_fields"):
+        prices = core._price_values(result.raw.description or "")
+        if len(set(prices)) > 2 and "multiple_prices" not in issues:
+            issues.append("multiple_prices")
+
+    return tuple(dict.fromkeys(issues))
+
+
+def _auto_ready(result: core.StructuredOffer, issues: tuple[str, ...]) -> bool:
     if not result.accepted:
         return False
     if not _has_concrete_benefit(result.raw):
         return False
-    if BLOCKING_ISSUES.intersection(result.issues):
+    if BLOCKING_ISSUES.intersection(issues):
         return False
     return result.confidence >= AUTO_READY_THRESHOLD
 
@@ -64,18 +80,20 @@ def structure_raw_offer_calibrated(raw: RawOffer) -> core.StructuredOffer:
     allowed through automatically. Ambiguity issues remain hard blockers.
     """
     result = _ORIGINAL_STRUCTURE_RAW(raw)
-    ready = _auto_ready(result)
+    issues = _calibrated_issues(result)
+    ready = _auto_ready(result, issues)
     payload = dict(result.raw.raw_payload or {})
     payload.update(
         {
             "readiness_version": READINESS_VERSION,
             "readiness_threshold": AUTO_READY_THRESHOLD,
-            "readiness_blocking_issues": sorted(BLOCKING_ISSUES.intersection(result.issues)),
+            "readiness_blocking_issues": sorted(BLOCKING_ISSUES.intersection(issues)),
+            "structuring_issues": list(issues),
             "structuring_auto_ready": ready,
         }
     )
     calibrated_raw = replace(result.raw, raw_payload=payload)
-    return replace(result, raw=calibrated_raw, auto_ready=ready)
+    return replace(result, raw=calibrated_raw, issues=issues, auto_ready=ready)
 
 
 def install_customer_feedback_16() -> None:
