@@ -14,6 +14,11 @@ _PATCHED = False
 _FALLBACK_PARSE = PromokoodAdapter.parse
 _CODE_TOKEN_RE = re.compile(r"^[A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9_-]{2,31}$")
 _PROMO_DESCRIPTION_RE = re.compile(r"^промокод\b", re.IGNORECASE)
+_CTA_RE = re.compile(
+    r"^(?:активировать|получить|открыть|использовать|применить)"
+    r"(?:\s+(?:промокод|скидку|предложение))?$",
+    re.IGNORECASE,
+)
 _STOP_PREFIXES = ("о сервисе", "похожие предложения", "ключевые преимущества", "mcc-коды")
 
 
@@ -137,11 +142,33 @@ def _structured_promokood_parse(self: PromokoodAdapter, html: str) -> list[RawOf
     return offers
 
 
+def _meaningful_fallback_offer(offer: RawOffer) -> bool:
+    """Reject generic CTA artifacts produced by the legacy fallback parser.
+
+    A fallback row is allowed only if it contains actual business content. This
+    keeps backwards compatibility for unusual Promokood markup without ever
+    turning a bare "Активировать промокод" button into an offer again.
+    """
+    title = " ".join((offer.title or "").split()).strip()
+    description = " ".join((offer.description or "").split()).strip()
+    if _CTA_RE.fullmatch(title) or _CTA_RE.fullmatch(description):
+        return False
+    return bool(
+        offer.promo_code
+        or offer.discount_percent is not None
+        or offer.discount_amount is not None
+        or offer.cashback_percent is not None
+        or offer.cashback_amount is not None
+        or offer.delivery_price is not None
+        or (description and len(description) >= 20)
+    )
+
+
 def _parse_v14_blocks(self: PromokoodAdapter, html: str) -> list[RawOffer]:
     structured = _structured_promokood_parse(self, html)
     if structured:
         return structured
-    return _FALLBACK_PARSE(self, html)
+    return [offer for offer in _FALLBACK_PARSE(self, html) if _meaningful_fallback_offer(offer)]
 
 
 def install_promokood_block_parser() -> None:
