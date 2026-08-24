@@ -7,7 +7,6 @@ import pytest
 from sqlalchemy import select
 
 from src.core.offer_structuring import structure_registry_payload
-from src.customer_feedback_15 import _persist_with_quality_gate
 from src.modules.offers.models import Offer
 from src.modules.source_registry import runner as registry_runner
 from src.modules.source_registry.models import SourceItem
@@ -78,9 +77,7 @@ def test_url_slug_can_never_become_promo_code() -> None:
         text="Скидка 30% на заказ. Промокод AGNISALE0058",
         raw_payload={"collector": "generic_web"},
     )
-
     candidate = _batch(payload, merchant="Agni").candidates[0]
-
     assert candidate.raw.promo_code == "AGNISALE0058"
     assert candidate.raw.promo_code != "SKID_EN"
 
@@ -93,9 +90,7 @@ def test_product_code_word_is_not_treated_as_promo_code() -> None:
         text="Код товара: ABCD. Сегодня скидка 20% на покупку.",
         raw_payload={"collector": "generic_web"},
     )
-
     candidate = _batch(payload, merchant="Shop").candidates[0]
-
     assert candidate.raw.promo_code is None
     assert candidate.raw.discount_percent == Decimal("20")
 
@@ -108,9 +103,7 @@ def test_titleless_item_gets_business_title_not_placeholder() -> None:
         text="Скидка 25% на первый заказ от 3000 рублей. Только для новых клиентов.",
         raw_payload={"collector": "generic_web"},
     )
-
     candidate = _batch(payload, merchant="Example Shop").candidates[0]
-
     assert candidate.raw.title != "Предложение"
     assert "Скидка 25%" in candidate.raw.title
     assert candidate.raw.discount_percent == Decimal("25")
@@ -127,9 +120,7 @@ def test_multiple_promos_in_one_block_are_quarantined_not_merged() -> None:
         ),
         raw_payload={"collector": "generic_web"},
     )
-
     batch = _batch(payload, merchant="Example Shop")
-
     assert batch.candidates == ()
     assert batch.disposition == "needs_review"
     assert "несколько" in (batch.reason or "").casefold()
@@ -143,9 +134,7 @@ def test_cta_only_is_quarantined_not_saved_as_offer() -> None:
         text="Активировать промокод",
         raw_payload={"collector": "generic_web"},
     )
-
     batch = _batch(payload)
-
     assert batch.candidates == ()
     assert batch.disposition == "needs_review"
 
@@ -166,9 +155,7 @@ def test_structured_source_fields_have_precedence_over_heuristics() -> None:
             "source_url": "https://known.example/deal",
         },
     )
-
     candidate = _batch(payload).candidates[0]
-
     assert candidate.raw.promo_code == "RIGHT20"
     assert candidate.raw.discount_percent == Decimal("20")
     assert candidate.raw.conditions == "Скидка 20% на первый заказ"
@@ -195,7 +182,6 @@ def test_registry_rejects_merged_block_before_offer_persistence(
             ]
 
     monkeypatch.setattr(registry_runner, "build_collector", lambda collector_type: FakeCollector())
-
     with create_session() as session:
         source = create_source(
             session,
@@ -209,7 +195,6 @@ def test_registry_rejects_merged_block_before_offer_persistence(
         session.commit()
 
     result = registry_runner.collect_registered_source(source_id)
-
     with create_session() as session:
         items = session.scalars(select(SourceItem)).all()
         offers = session.scalars(select(Offer)).all()
@@ -243,7 +228,6 @@ def test_registry_single_offer_uses_universal_contract(
             ]
 
     monkeypatch.setattr(registry_runner, "build_collector", lambda collector_type: FakeCollector())
-
     with create_session() as session:
         source = create_source(
             session,
@@ -257,7 +241,6 @@ def test_registry_single_offer_uses_universal_contract(
         session.commit()
 
     result = registry_runner.collect_registered_source(source_id)
-
     with create_session() as session:
         item = session.scalar(select(SourceItem))
         offer = session.scalar(select(Offer))
@@ -273,12 +256,9 @@ def test_registry_single_offer_uses_universal_contract(
 
 
 def test_runtime_patch_covers_legacy_and_registry_paths() -> None:
-    assert sources_persist_name() == "_persist_with_quality_gate"
-    assert registry_runner._persist_raw_offer is _persist_with_quality_gate
-    assert registry_runner.collect_registered_source.__name__ == "_collect_registered_source_v15"
-
-
-def sources_persist_name() -> str:
     from src.sources import runner as sources_runner
 
-    return sources_runner._persist_raw_offer.__name__
+    assert getattr(sources_runner._persist_raw_offer, "_dp_cust_015_quality_gate", False) is True
+    assert getattr(registry_runner._persist_raw_offer, "_dp_cust_015_quality_gate", False) is True
+    assert sources_runner._persist_raw_offer is registry_runner._persist_raw_offer
+    assert registry_runner.collect_registered_source.__name__ == "_collect_registered_source_v15"
