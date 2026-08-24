@@ -22,16 +22,17 @@ _CTA_ONLY_RE = re.compile(
     r"(?:\s+(?:промокод|скидку|предложение|акцию))?$",
     re.IGNORECASE,
 )
-_EXPLICIT_PROMO_RE = re.compile(
-    r"(?<![\w/])(?:промокод(?:у|а|ом|е|ы|ов)?|promo\s*code|coupon\s*code|код)\b"
+_PROMO_LABEL_RE = re.compile(
+    r"(?<![\w/])(?:промокод(?:у|а|ом|е|ы|ов)?|promo\s*code|coupon\s*code)\b"
     r"\s*[:\-–—]?\s*([A-ZА-ЯЁ0-9][A-ZА-ЯЁ0-9_-]{3,31})\b",
     re.IGNORECASE,
 )
-_STANDALONE_CODE_RE = re.compile(r"^[A-ZА-ЯЁ0-9][A-ZА-ЯЁ0-9_-]{4,31}$")
-_PERCENT_RE = re.compile(
-    r"(?:скидк\w*\s*(?:до\s*)?|до\s+)?(?<!\d)(\d{1,3}(?:[.,]\d+)?)\s*%",
+_CODE_WITH_SEPARATOR_RE = re.compile(
+    r"(?<![\w/])код\b\s*[:\-–—]\s*([A-ZА-ЯЁ0-9][A-ZА-ЯЁ0-9_-]{3,31})\b",
     re.IGNORECASE,
 )
+_STANDALONE_CODE_RE = re.compile(r"^[A-ZА-ЯЁ0-9][A-ZА-ЯЁ0-9_-]{4,31}$")
+_PERCENT_RE = re.compile(r"(?<!\d)(\d{1,3}(?:[.,]\d+)?)\s*%", re.IGNORECASE)
 _CASHBACK_PERCENT_RE = re.compile(
     r"(?:кэшб\w*|кешб\w*|cashback)\D{0,30}(\d{1,3}(?:[.,]\d+)?)\s*%",
     re.IGNORECASE,
@@ -62,10 +63,15 @@ _NOISE_LINE_RE = re.compile(
     r"^(?:реклама\.?|erid\b.*|инн\b.*|рекламодатель\b.*|подробнее|читать далее)$",
     re.IGNORECASE,
 )
+_GENERIC_TITLES = {"предложение", "акция", "скидка", "промокод", "спецпредложение"}
 _PROMO_STOPWORDS = {
     "АКТИВИРОВАТЬ", "ПРОМОКОД", "ПРОМОКОДЫ", "СКИДКА", "СКИДКИ", "ПОЛУЧИТЬ",
     "ОТКРЫТЬ", "ПРИМЕНИТЬ", "ИСПОЛЬЗОВАТЬ", "ПРЕДЛОЖЕНИЕ", "ПЕРЕЙТИ", "ЗАБРАТЬ",
-    "PROMOCODE", "PROMO", "SALE", "COUPON",
+    "PROMOCODE", "PROMO", "SALE", "COUPON", "ТОВАРА", "ТОВАР", "ЗАКАЗА", "ЗАКАЗ",
+    "АКЦИИ", "МАРКЕТЕ", "МАГАЗИНЕ", "ДОСТАВКА", "БЕСПЛАТНО",
+}
+_SOCIAL_HOSTS = {
+    "t.me", "telegram.me", "vk.com", "dzen.ru", "zen.yandex.ru", "rutube.ru",
 }
 
 
@@ -115,24 +121,19 @@ def _clean_url(value: Any) -> str | None:
     return text
 
 
-def _promo_candidates(text: str) -> list[str]:
-    clean = _strip_urls_preserving_length(text)
-    result: list[str] = []
-    for match in _EXPLICIT_PROMO_RE.finditer(clean):
-        candidate = match.group(1).upper()
-        if _valid_promo(candidate) and candidate not in result:
-            result.append(candidate)
-
-    for line in clean.splitlines():
-        candidate = line.strip().strip("•—–-:;,.[](){}<>").upper()
-        if not candidate or candidate in result:
+def _external_offer_url(text: str, fallback: str | None) -> str | None:
+    fallback_url = _clean_url(fallback)
+    fallback_host = (urlparse(fallback_url).hostname or "").casefold().removeprefix("www.") if fallback_url else ""
+    for match in _URL_RE.finditer(text or ""):
+        candidate = _clean_url(match.group(0))
+        if not candidate:
             continue
-        if candidate != line.strip().strip("•—–-:;,.[](){}<>"):
-            # Standalone fallback is deliberately uppercase-only.
+        host = (urlparse(candidate).hostname or "").casefold().removeprefix("www.")
+        if host in _SOCIAL_HOSTS:
             continue
-        if _valid_promo(candidate) and (any(char.isdigit() for char in candidate) or "_" in candidate):
-            result.append(candidate)
-    return result
+        if fallback_host in _SOCIAL_HOSTS or not fallback_url:
+            return candidate
+    return fallback_url
 
 
 def _valid_promo(value: str | None) -> bool:
@@ -142,6 +143,25 @@ def _valid_promo(value: str | None) -> bool:
     if _CTA_ONLY_RE.fullmatch(candidate):
         return False
     return bool(_STANDALONE_CODE_RE.fullmatch(candidate))
+
+
+def _promo_candidates(text: str) -> list[str]:
+    clean = _strip_urls_preserving_length(text)
+    result: list[str] = []
+    for regex in (_PROMO_LABEL_RE, _CODE_WITH_SEPARATOR_RE):
+        for match in regex.finditer(clean):
+            candidate = match.group(1).upper()
+            if _valid_promo(candidate) and candidate not in result:
+                result.append(candidate)
+
+    for line in clean.splitlines():
+        original = line.strip().strip("•—–-:;,.[](){}<>")
+        candidate = original.upper()
+        if not candidate or candidate in result or candidate != original:
+            continue
+        if _valid_promo(candidate) and (any(char.isdigit() for char in candidate) or "_" in candidate):
+            result.append(candidate)
+    return result
 
 
 def _decimal_matches(regex: re.Pattern[str], text: str) -> list[Decimal]:
@@ -176,9 +196,9 @@ def _meaningful_title(candidate: str | None) -> bool:
     text = _text(candidate)
     if not text:
         return False
-    if _CTA_ONLY_RE.fullmatch(text):
+    if text.casefold().strip(" .:-—") in _GENERIC_TITLES:
         return False
-    if _NOISE_LINE_RE.fullmatch(text):
+    if _CTA_ONLY_RE.fullmatch(text) or _NOISE_LINE_RE.fullmatch(text):
         return False
     if _valid_promo(text.upper()) and text.upper() == text:
         return False
@@ -189,11 +209,12 @@ def _meaningful_title(candidate: str | None) -> bool:
 
 def _title_from_text(text: str, merchant: str | None, benefit_label: str | None) -> tuple[str | None, bool]:
     lines = [" ".join(line.split()).strip(" •\t") for line in (text or "").splitlines()]
-    lines = [line for line in lines if _meaningful_title(line) and not line.casefold().startswith("рекламодатель")]
-
+    lines = [
+        line for line in lines
+        if _meaningful_title(line) and not line.casefold().startswith("рекламодатель")
+    ]
     preferred = next((line for line in lines if _OFFER_WORD_RE.search(line)), None)
     title = preferred or (lines[0] if lines else None)
-
     if not title:
         parts = [part for part in (benefit_label, merchant) if part]
         title = " — ".join(parts) if parts else None
@@ -284,11 +305,13 @@ def _quality(
 def structure_raw_offer(raw: RawOffer) -> StructuredOffer:
     metadata = dict(raw.raw_payload or {})
     if metadata.get("structuring_version") == STRUCTURING_VERSION:
-        confidence = float(metadata.get("structuring_confidence") or 0.0)
-        issues = tuple(str(value) for value in (metadata.get("structuring_issues") or []))
-        accepted = bool(metadata.get("structuring_accepted", True))
-        auto_ready = bool(metadata.get("structuring_auto_ready", False))
-        return StructuredOffer(raw=raw, confidence=confidence, issues=issues, auto_ready=auto_ready, accepted=accepted)
+        return StructuredOffer(
+            raw=raw,
+            confidence=float(metadata.get("structuring_confidence") or 0.0),
+            issues=tuple(str(value) for value in (metadata.get("structuring_issues") or [])),
+            auto_ready=bool(metadata.get("structuring_auto_ready", False)),
+            accepted=bool(metadata.get("structuring_accepted", True)),
+        )
 
     original_text = "\n".join(part for part in (raw.title, raw.description) if part)
     clean_text = _strip_urls_preserving_length(original_text)
@@ -305,17 +328,17 @@ def structure_raw_offer(raw: RawOffer) -> StructuredOffer:
     if len(promo_candidates) > 1 and not structured_fields:
         issues.append("multiple_promo_codes")
 
-    discount_values = _decimal_matches(_PERCENT_RE, clean_text)
+    percent_values = _decimal_matches(_PERCENT_RE, clean_text)
     cashback_values = _decimal_matches(_CASHBACK_PERCENT_RE, clean_text)
     discount_percent = _decimal(_structured_value(metadata, "discount_percent", raw.discount_percent))
     cashback_percent = _decimal(_structured_value(metadata, "cashback_percent", raw.cashback_percent))
     if cashback_percent is None and cashback_values:
         cashback_percent = cashback_values[0]
     if discount_percent is None:
-        non_cashback = [value for value in discount_values if value not in cashback_values]
+        non_cashback = [value for value in percent_values if value not in cashback_values]
         if non_cashback:
             discount_percent = non_cashback[0]
-    if len(set(discount_values)) > 2 and not structured_fields:
+    if len(set(percent_values)) > 2 and not structured_fields:
         issues.append("multiple_discount_percentages")
 
     discount_amount = _decimal(_structured_value(metadata, "discount_amount", raw.discount_amount))
@@ -341,20 +364,12 @@ def structure_raw_offer(raw: RawOffer) -> StructuredOffer:
     if free_delivery and delivery_price is None:
         delivery_price = Decimal("0")
 
-    merchant = (
-        _text(_structured_value(metadata, "merchant", raw.merchant))
-        or _merchant_from_text(original_text)
-    )
+    merchant = _text(_structured_value(metadata, "merchant", raw.merchant)) or _merchant_from_text(original_text)
     brand = _text(_structured_value(metadata, "brand", raw.brand))
 
     explicit_conditions = _text(_structured_value(metadata, "conditions", raw.conditions))
-    condition_result = condition_service.extract_conditions(
-        raw.title,
-        raw.description,
-        explicit=explicit_conditions,
-    )
+    condition_result = condition_service.extract_conditions(raw.title, raw.description, explicit=explicit_conditions)
     conditions = explicit_conditions or condition_result.conditions
-
     max_discount_amount = _decimal(
         _structured_value(metadata, "max_discount_amount", raw.max_discount_amount)
     ) or condition_result.max_discount_amount
@@ -362,14 +377,9 @@ def structure_raw_offer(raw: RawOffer) -> StructuredOffer:
         _structured_value(metadata, "min_order_amount", raw.min_order_amount)
     ) or condition_result.min_order_amount
 
-    source_url = (
-        _clean_url(metadata.get("offer_url"))
-        or _clean_url(metadata.get("source_url"))
-        or _clean_url(raw.source_url)
-    )
-
+    explicit_url = _clean_url(metadata.get("offer_url")) or _clean_url(metadata.get("source_url"))
+    source_url = explicit_url or _external_offer_url(raw.description or "", raw.source_url)
     valid_until = _datetime(_structured_value(metadata, "valid_until", raw.valid_until), original_text)
-    valid_from = raw.valid_from
 
     has_benefit = any(
         value is not None
@@ -395,9 +405,7 @@ def structure_raw_offer(raw: RawOffer) -> StructuredOffer:
     )
 
     preferred_title = _text(metadata.get("title")) or _text(raw.title)
-    if preferred_title and not _meaningful_title(preferred_title):
-        preferred_title = None
-    if preferred_title and len(preferred_title) > 240:
+    if preferred_title and (not _meaningful_title(preferred_title) or len(preferred_title) > 240):
         preferred_title = None
     derived_title, title_truncated = _title_from_text(raw.description or raw.title, merchant, benefit_label)
     title = preferred_title or derived_title
@@ -412,16 +420,11 @@ def structure_raw_offer(raw: RawOffer) -> StructuredOffer:
         issues.append("multiple_offer_markers")
     if date_count >= 3 and len(original_text) > 300 and not structured_fields:
         issues.append("multiple_validity_markers")
-
-    severe = {
-        "multiple_promo_codes",
-        "multiple_offer_markers",
-        "invalid_title",
-    }
-    accepted = bool((has_benefit or has_offer_marker) and not severe.intersection(issues))
     if not has_benefit and has_offer_marker:
         issues.append("benefit_needs_review")
 
+    severe = {"multiple_promo_codes", "multiple_offer_markers", "invalid_title"}
+    accepted = bool((has_benefit or has_offer_marker) and not severe.intersection(issues))
     confidence = _quality(
         title=title,
         merchant=merchant,
@@ -431,18 +434,19 @@ def structure_raw_offer(raw: RawOffer) -> StructuredOffer:
         has_benefit=has_benefit,
         issues=issues,
     )
+    unique_issues = tuple(dict.fromkeys(issues))
     auto_ready = bool(
         accepted
         and has_benefit
         and confidence >= AUTO_READY_THRESHOLD
-        and not issues
+        and not unique_issues
     )
 
     enriched_payload = {
         **metadata,
         "structuring_version": STRUCTURING_VERSION,
         "structuring_confidence": confidence,
-        "structuring_issues": list(dict.fromkeys(issues)),
+        "structuring_issues": list(unique_issues),
         "structuring_auto_ready": auto_ready,
         "structuring_accepted": accepted,
         "field_precedence": "structured_then_universal_heuristic",
@@ -464,14 +468,13 @@ def structure_raw_offer(raw: RawOffer) -> StructuredOffer:
         cashback_percent=cashback_percent,
         cashback_amount=cashback_amount,
         delivery_price=delivery_price,
-        valid_from=valid_from,
         valid_until=valid_until,
         raw_payload=enriched_payload,
     )
     return StructuredOffer(
         raw=structured_raw,
         confidence=confidence,
-        issues=tuple(dict.fromkeys(issues)),
+        issues=unique_issues,
         auto_ready=auto_ready,
         accepted=accepted,
     )
@@ -489,22 +492,20 @@ def structure_registry_payload(
 ) -> StructuringBatch:
     metadata = dict(payload.raw_payload or {})
     combined_text = "\n".join(part for part in (payload.title, payload.text) if part)
+    promo_codes = _promo_candidates(combined_text)
+    structured_fields = bool(metadata.get("structured_fields"))
 
     if signal is not None:
         metadata.setdefault("signal_is_offer", bool(getattr(signal, "is_offer", False)))
         metadata.setdefault("signal_confidence", int(getattr(signal, "confidence", 0) or 0))
         metadata.setdefault("matched_keywords", list(getattr(signal, "matched_keywords", ()) or ()))
-        if metadata.get("promo_code") in (None, ""):
-            metadata["promo_code"] = getattr(signal, "promo_code", None)
-        if metadata.get("discount_percent") in (None, ""):
-            value = getattr(signal, "discount_percent", None)
-            metadata["discount_percent"] = str(value) if value is not None else None
-        if metadata.get("old_price") in (None, ""):
-            value = getattr(signal, "old_price", None)
-            metadata["old_price"] = str(value) if value is not None else None
-        if metadata.get("new_price") in (None, ""):
-            value = getattr(signal, "new_price", None)
-            metadata["new_price"] = str(value) if value is not None else None
+        signal_promo = _text(getattr(signal, "promo_code", None))
+        if metadata.get("promo_code") in (None, "") and signal_promo and signal_promo.upper() in promo_codes:
+            metadata["promo_code"] = signal_promo
+        for key in ("discount_percent", "old_price", "new_price"):
+            if metadata.get(key) in (None, ""):
+                value = getattr(signal, key, None)
+                metadata[key] = str(value) if value is not None else None
 
     if metadata.get("merchant") in (None, "") and source_merchant:
         metadata["merchant"] = source_merchant
@@ -512,8 +513,6 @@ def structure_registry_payload(
         metadata["brand"] = source_brand
     metadata.setdefault("platform", platform)
 
-    promo_codes = _promo_candidates(combined_text)
-    structured_fields = bool(metadata.get("structured_fields"))
     if len(promo_codes) > 1 and not structured_fields:
         return StructuringBatch(
             candidates=(),
@@ -524,6 +523,7 @@ def structure_registry_payload(
             ),
         )
 
+    fallback_url = _clean_url(payload.url) or _clean_url(source_url) or source_url
     raw = RawOffer(
         source_key=source_key,
         external_id=payload.external_id or "",
@@ -531,7 +531,7 @@ def structure_registry_payload(
         source_url=(
             _clean_url(metadata.get("offer_url"))
             or _clean_url(metadata.get("source_url"))
-            or _clean_url(payload.url)
+            or _external_offer_url(payload.text or "", fallback_url)
             or source_url
         ),
         merchant=_text(metadata.get("merchant")) or source_merchant,
@@ -554,8 +554,8 @@ def structure_registry_payload(
         raw_payload=metadata,
     )
     structured = structure_raw_offer(raw)
-
     signal_offer = bool(getattr(signal, "is_offer", False)) if signal is not None else False
+
     if not structured.accepted:
         if signal_offer or _OFFER_WORD_RE.search(_strip_urls_preserving_length(combined_text)):
             return StructuringBatch(
@@ -571,11 +571,7 @@ def structure_registry_payload(
     return StructuringBatch(
         candidates=(structured,),
         disposition="processed" if structured.auto_ready else "needs_review",
-        reason=(
-            None
-            if structured.auto_ready
-            else "Предложение распознано, но требует проверки перед публикацией."
-        ),
+        reason=None if structured.auto_ready else "Предложение распознано, но требует проверки перед публикацией.",
     )
 
 
