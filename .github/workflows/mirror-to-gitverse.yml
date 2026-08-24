@@ -40,7 +40,7 @@ jobs:
         run: |
           set -euo pipefail
           git clone --mirror \
-            "https://x-access-token:$GH_TOKEN@github.com/$GH_REPOSITORY.git" \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPOSITORY}.git" \
             repository.git
 
       - name: Push branches and tags to GitVerse
@@ -52,7 +52,7 @@ jobs:
           cd repository.git
 
           git remote add gitverse \
-            "https://arvectum:$GITVERSE_TOKEN@gitverse.ru/arvectum/$GITVERSE_REPOSITORY.git"
+            "https://arvectum:${GITVERSE_TOKEN}@gitverse.ru/arvectum/${GITVERSE_REPOSITORY}.git"
 
           # Mirror only normal branches and tags.
           # GitHub-specific refs/pull/* are intentionally excluded.
@@ -66,7 +66,7 @@ jobs:
           GITVERSE_REPOSITORY: ${{ vars.GITVERSE_REPO }}
         run: |
           echo "### GitVerse mirror updated" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Source: \${GITHUB_REPOSITORY}\" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Target: \rvectum/$GITVERSE_REPOSITORY\" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Trigger: \${GITHUB_EVENT_NAME}\" >> "$GITHUB_STEP_SUMMARY"
-          echo "- SHA: \${GITHUB_SHA}\" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Source: ${GITHUB_REPOSITORY}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Target: arvectum/${GITVERSE_REPOSITORY}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Trigger: ${GITHUB_EVENT_NAME}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- SHA: ${GITHUB_SHA}" >> "$GITHUB_STEP_SUMMARY"
