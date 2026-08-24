@@ -18,4 +18,4 @@ def test_package_and_installer_versions_match() -> None:
     installer_version = match.group(1)
 
     assert package_version == installer_version
-    assert package_version == "0.1.11"
+    assert package_version == "0.1.12"
