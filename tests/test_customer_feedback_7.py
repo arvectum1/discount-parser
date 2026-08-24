@@ -28,4 +28,4 @@ def test_windows_installer_is_feedback_7_build() -> None:
     from pathlib import Path
 
     installer = (Path(__file__).resolve().parents[1] / "packaging" / "windows" / "installer.iss").read_text(encoding="utf-8")
-    assert '#define MyAppVersion "0.1.11"' in installer
+    assert '#define MyAppVersion "0.1.12"' in installer
