@@ -86,3 +86,8 @@ def test_customer_existing_source_flow_is_confirm_only() -> None:
     assert "ручная разметка HTML для решения этой ошибки не нужна" in page
     assert "reveal_selector\": None" in page
     assert "reveal_code_attribute\": None" in page
+
+
+def test_feedback_13_windows_installer_version() -> None:
+    installer = (ROOT / "packaging" / "windows" / "installer.iss").read_text(encoding="utf-8")
+    assert '#define MyAppVersion "0.1.13"' in installer
