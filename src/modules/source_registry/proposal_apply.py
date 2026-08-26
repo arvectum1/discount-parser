@@ -45,11 +45,13 @@ def apply_assisted_proposal(
     profile tables are also created idempotently for upgraded customer DBs.
     """
     follow = _follow_values(proposal)
+    requested_name = name.strip()
     with session_scope() as session:
         ensure_source_profile_tables(session)
 
         source: RegisteredSource | None
-        if source_id is not None:
+        explicit_existing = source_id is not None
+        if explicit_existing:
             source = session.get(RegisteredSource, int(source_id))
             if source is None:
                 raise ValueError("Источник не найден")
@@ -57,7 +59,6 @@ def apply_assisted_proposal(
             source = session.scalar(select(RegisteredSource).where(RegisteredSource.url == proposal.url))
 
         values: dict[str, object] = {
-            "name": name.strip() or proposal.name,
             "platform": "website",
             "source_type": "promotion_page",
             "url": proposal.url,
@@ -72,10 +73,19 @@ def apply_assisted_proposal(
             "reveal_selector": None,
             "reveal_code_attribute": None,
         }
+        # Reconfiguring an explicitly selected existing source must not rename a
+        # customer-defined label merely because auto-analysis inferred another
+        # site name. A supplied name still wins. URL-based create/update keeps
+        # the historical proposal-name behavior.
+        if requested_name:
+            values["name"] = requested_name
+        elif not explicit_existing:
+            values["name"] = proposal.name
+
         if source is None:
             source = create_source(
                 session,
-                name=str(values["name"]),
+                name=requested_name or proposal.name,
                 platform="website",
                 source_type="promotion_page",
                 url=proposal.url,
