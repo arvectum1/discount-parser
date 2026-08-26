@@ -149,7 +149,7 @@ def test_telegram_post_is_enriched_before_universal_structuring(monkeypatch) -> 
     assert "SKID_EN" not in str(enriched.raw_payload.get("promo_code"))
 
 
-def test_promo_code_is_mandatory_in_outgoing_post_and_named_secrets_are_redacted(monkeypatch) -> None:
+def test_outgoing_caption_redacts_named_secrets_without_overriding_field_choices(monkeypatch) -> None:
     class Offer:
         promo_code = "SAVE20"
 
@@ -163,6 +163,6 @@ def test_promo_code_is_mandatory_in_outgoing_post_and_named_secrets_are_redacted
         PublicationFormat(order=("conditions",), enabled=frozenset({"conditions"})),
     )
 
-    assert "🎁 Промокод: <code>SAVE20</code>" in caption
+    assert "Промокод:" not in caption
     assert "very-secret-value" not in caption
     assert "***REDACTED***" in caption
