@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 
 from sqlalchemy import create_engine, text
@@ -14,6 +15,9 @@ from src.modules.source_registry.follow_profiles import FollowProfile
 from src.modules.source_registry.models import RegisteredSource
 from src.modules.source_registry.service import ItemPayload
 from src.telegram.publication_format import PublicationFormat
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_background_runtime_has_same_follow_collector_as_web_runtime() -> None:
@@ -121,6 +125,14 @@ def test_automatic_apply_self_heals_missing_profile_tables_and_is_single_transac
             {"id": source_id},
         ).one()
         assert image[0] == source_id
+
+
+def test_runtime_profile_recovery_remains_alembic_compatible() -> None:
+    migration_8 = (ROOT / "migrations" / "versions" / "0008_source_image_profiles.py").read_text(encoding="utf-8")
+    migration_9 = (ROOT / "migrations" / "versions" / "0009_source_follow_profiles.py").read_text(encoding="utf-8")
+
+    assert 'if "source_image_profiles" in inspector.get_table_names()' in migration_8
+    assert 'if "source_follow_profiles" in inspector.get_table_names()' in migration_9
 
 
 def test_reconfigure_preserves_customer_source_name_when_no_new_name_is_supplied(monkeypatch) -> None:
