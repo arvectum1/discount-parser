@@ -40,12 +40,13 @@ def _enrich_telegram_payload(payload: registry_service.ItemPayload) -> registry_
     text = str(payload.text or "")
     metadata = dict(payload.raw_payload or {})
     promo_codes = structuring._promo_candidates(text)
-    if len(promo_codes) == 1:
-        metadata["promo_code"] = promo_codes[0]
-    elif len(promo_codes) > 1:
-        # Do not guess which code belongs to which offer. The universal
-        # structurer will quarantine this post instead of publishing a merge.
-        metadata["telegram_multiple_promo_codes"] = promo_codes
+    if metadata.get("promo_code") in (None, ""):
+        if len(promo_codes) == 1:
+            metadata["promo_code"] = promo_codes[0]
+        elif len(promo_codes) > 1:
+            # Do not guess which code belongs to which offer. The universal
+            # structurer will quarantine this post instead of publishing a merge.
+            metadata["telegram_multiple_promo_codes"] = promo_codes
 
     signal = registry_service.detect_offer_signal(text)
     if metadata.get("discount_percent") in (None, "") and signal.discount_percent is not None:
@@ -63,7 +64,9 @@ def _enrich_telegram_payload(payload: registry_service.ItemPayload) -> registry_
         if valid_until is not None:
             metadata["valid_until"] = valid_until.isoformat()
 
-    title = _telegram_title(text) or payload.title
+    # Preserve a source/adapter-provided title. Telegram line heuristics are a
+    # fallback only, consistent with the global structured-fields precedence.
+    title = payload.title or _telegram_title(text)
     metadata["telegram_structuring_version"] = "dp-cust-017"
     return replace(payload, title=title, raw_payload=metadata)
 
