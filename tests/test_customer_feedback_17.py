@@ -69,12 +69,9 @@ def test_worker_style_promokood_category_follows_internal_pages(monkeypatch) -> 
     assert items[0].raw_payload["detail_url"] == "https://promokood.ru/o/store-one"
 
 
-def test_automatic_apply_self_heals_missing_profile_tables_and_is_single_transaction(monkeypatch) -> None:
-    engine = create_engine("sqlite:///:memory:")
-    RegisteredSource.__table__.create(engine)
-
+def _isolated_scope(engine):
     @contextmanager
-    def isolated_scope():
+    def scope():
         with Session(engine) as session:
             try:
                 yield session
@@ -83,9 +80,11 @@ def test_automatic_apply_self_heals_missing_profile_tables_and_is_single_transac
                 session.rollback()
                 raise
 
-    monkeypatch.setattr(proposal_apply, "session_scope", isolated_scope)
+    return scope
 
-    proposal = AssistedSourceProposal(
+
+def _promokood_proposal() -> AssistedSourceProposal:
+    return AssistedSourceProposal(
         url="https://promokood.ru/",
         name="Promokood",
         crawl_mode="follow_internal",
@@ -97,7 +96,13 @@ def test_automatic_apply_self_heals_missing_profile_tables_and_is_single_transac
         previews=(),
     )
 
-    source_id = proposal_apply.apply_assisted_proposal(proposal)
+
+def test_automatic_apply_self_heals_missing_profile_tables_and_is_single_transaction(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:")
+    RegisteredSource.__table__.create(engine)
+    monkeypatch.setattr(proposal_apply, "session_scope", _isolated_scope(engine))
+
+    source_id = proposal_apply.apply_assisted_proposal(_promokood_proposal())
 
     with Session(engine) as session:
         source = session.get(RegisteredSource, source_id)
@@ -116,6 +121,31 @@ def test_automatic_apply_self_heals_missing_profile_tables_and_is_single_transac
             {"id": source_id},
         ).one()
         assert image[0] == source_id
+
+
+def test_reconfigure_preserves_customer_source_name_when_no_new_name_is_supplied(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:")
+    RegisteredSource.__table__.create(engine)
+    with Session(engine) as session:
+        source = RegisteredSource(
+            key="customer-promokood",
+            name="Моё название источника",
+            platform="website",
+            source_type="promotion_page",
+            url="https://promokood.ru/",
+            collector_type="generic_web",
+        )
+        session.add(source)
+        session.commit()
+        source_id = int(source.id)
+
+    monkeypatch.setattr(proposal_apply, "session_scope", _isolated_scope(engine))
+    proposal_apply.apply_assisted_proposal(_promokood_proposal(), source_id=source_id, name="")
+
+    with Session(engine) as session:
+        source = session.get(RegisteredSource, source_id)
+        assert source is not None
+        assert source.name == "Моё название источника"
 
 
 def test_telegram_post_is_enriched_before_universal_structuring(monkeypatch) -> None:
@@ -147,6 +177,21 @@ def test_telegram_post_is_enriched_before_universal_structuring(monkeypatch) -> 
     assert "30%" in str(enriched.raw_payload.get("conditions") or "")
     assert enriched.raw_payload["telegram_structuring_version"] == "dp-cust-017"
     assert "SKID_EN" not in str(enriched.raw_payload.get("promo_code"))
+
+
+def test_telegram_enrichment_does_not_overwrite_source_structured_title_or_promo() -> None:
+    payload = ItemPayload(
+        external_id="telegram:structured:1",
+        url="https://shop.example/deal",
+        title="Точное название от адаптера",
+        text="Другое название из текста\nПромокод TEXT15 — скидка 15%",
+        raw_payload={"collector": "telegram_public", "promo_code": "SOURCE20"},
+    )
+
+    enriched = feedback17._enrich_telegram_payload(payload)
+
+    assert enriched.title == "Точное название от адаптера"
+    assert enriched.raw_payload["promo_code"] == "SOURCE20"
 
 
 def test_outgoing_caption_redacts_named_secrets_without_overriding_field_choices(monkeypatch) -> None:
