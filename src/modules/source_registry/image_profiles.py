@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import replace
 from urllib.parse import urljoin
@@ -7,23 +8,23 @@ from urllib.parse import urljoin
 from sqlalchemy import text
 
 from src.modules.source_registry.collectors import CollectorError, GenericWebCollector
+from src.modules.source_registry.profile_schema import ensure_source_profile_tables
 from src.modules.source_registry.service import ItemPayload
 from src.shared.db import create_session, session_scope
 
 
+logger = logging.getLogger(__name__)
 _PATCH_MARKER = "_dp_fb5_image_profile_patch"
 
 
 def get_image_profile(source_id: int | None) -> tuple[str | None, str | None]:
-    """Return the optional per-source image selector and attribute.
-
-    The table is introduced by migration 0008. Returning an empty profile when
-    it is not available keeps development/pre-migration imports harmless.
-    """
+    """Return the optional per-source image selector and attribute."""
     if source_id is None:
         return None, None
     try:
         with create_session() as session:
+            ensure_source_profile_tables(session)
+            session.commit()
             row = session.execute(
                 text(
                     "SELECT image_selector, image_attribute "
@@ -31,7 +32,8 @@ def get_image_profile(source_id: int | None) -> tuple[str | None, str | None]:
                 ),
                 {"source_id": int(source_id)},
             ).mappings().first()
-    except Exception:
+    except Exception as exc:
+        logger.warning("image_profile_read_failed source_id=%s error=%s", source_id, type(exc).__name__)
         return None, None
     if not row:
         return None, None
@@ -44,6 +46,7 @@ def set_image_profile(source_id: int, *, image_selector: str | None, image_attri
     selector = (image_selector or "").strip() or None
     attribute = (image_attribute or "").strip() or None
     with session_scope() as session:
+        ensure_source_profile_tables(session)
         exists = session.execute(
             text("SELECT registered_source_id FROM source_image_profiles WHERE registered_source_id = :source_id"),
             {"source_id": int(source_id)},
