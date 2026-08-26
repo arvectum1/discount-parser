@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlparse
 
 from sqlalchemy import text
 
 from src.modules.source_registry.manual_profile import generalize_container_selector, relative_field_selector
+from src.modules.source_registry.profile_schema import ensure_source_profile_tables
 from src.shared.db import create_session, session_scope
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +29,8 @@ def get_follow_profile(source_id: int | None) -> FollowProfile:
         return FollowProfile()
     try:
         with create_session() as session:
+            ensure_source_profile_tables(session)
+            session.commit()
             row = session.execute(
                 text(
                     "SELECT crawl_mode, listing_item_selector, detail_link_selector, detail_url_contains, merchant_selector, max_detail_pages "
@@ -31,7 +38,8 @@ def get_follow_profile(source_id: int | None) -> FollowProfile:
                 ),
                 {"source_id": int(source_id)},
             ).mappings().first()
-    except Exception:
+    except Exception as exc:
+        logger.warning("follow_profile_read_failed source_id=%s error=%s", source_id, type(exc).__name__)
         return FollowProfile()
     if not row:
         return FollowProfile()
@@ -71,6 +79,7 @@ def set_follow_profile(
         raise ValueError("Для перехода по внутренним страницам нужен selector кнопки/ссылки.")
 
     with session_scope() as session:
+        ensure_source_profile_tables(session)
         exists = session.execute(
             text("SELECT registered_source_id FROM source_follow_profiles WHERE registered_source_id = :source_id"),
             {"source_id": int(source_id)},
