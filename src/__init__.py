@@ -22,3 +22,10 @@ install_customer_feedback_16()
 # exactly the same collector behavior.
 install_follow_profile_collection()
 install_profile_image_extraction()
+
+# This import intentionally comes last: DP-CUST-017 wraps the already-installed
+# Telegram and confirmation behavior and therefore must see the final DP14-16
+# implementations as its originals.
+from src.customer_feedback_17 import install_customer_feedback_17
+
+install_customer_feedback_17()
