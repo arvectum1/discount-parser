@@ -5,14 +5,9 @@ from urllib.parse import quote
 
 from fastapi import Form
 from fastapi.responses import HTMLResponse, RedirectResponse
-from sqlalchemy import select
 
 from src.modules.source_registry.assisted_setup import AssistedSourceProposal, analyze_assisted_source
-from src.modules.source_registry.follow_profiles import set_follow_profile
-from src.modules.source_registry.image_profiles import set_image_profile
-from src.modules.source_registry.models import RegisteredSource
-from src.modules.source_registry.service import create_source, set_source_enabled, update_source
-from src.shared.db import create_session, session_scope
+from src.modules.source_registry.proposal_apply import apply_assisted_proposal
 from src.web.setup import is_setup_complete
 from src.web.source_registry_routes import _layout
 
@@ -90,63 +85,7 @@ def assisted_analysis_page(url: str = Form(...)):
 
 
 def _apply_proposal(proposal: AssistedSourceProposal) -> int:
-    with session_scope() as session:
-        existing = session.scalar(select(RegisteredSource).where(RegisteredSource.url == proposal.url))
-        if existing is None:
-            source = create_source(
-                session,
-                name=proposal.name,
-                platform="website",
-                source_type="promotion_page",
-                url=proposal.url,
-                collector_type="generic_web",
-                trust_level="unknown",
-                priority=50,
-                check_interval_minutes=120,
-                enabled=False,
-                item_selector=proposal.item_selector,
-                title_selector=proposal.title_selector,
-                promo_code_selector=proposal.promo_code_selector,
-                promo_code_attribute=proposal.promo_code_attribute,
-                conditions_selector=proposal.conditions_selector,
-                valid_until_selector=proposal.valid_until_selector,
-                link_selector=proposal.link_selector,
-            )
-        else:
-            source = update_source(
-                session,
-                existing.id,
-                name=proposal.name,
-                platform="website",
-                source_type="promotion_page",
-                collector_type="generic_web",
-                item_selector=proposal.item_selector,
-                title_selector=proposal.title_selector,
-                promo_code_selector=proposal.promo_code_selector,
-                promo_code_attribute=proposal.promo_code_attribute,
-                conditions_selector=proposal.conditions_selector,
-                valid_until_selector=proposal.valid_until_selector,
-                link_selector=proposal.link_selector,
-            )
-        source_id = int(source.id)
-
-    if proposal.image_selector:
-        set_image_profile(
-            source_id,
-            image_selector=proposal.image_selector,
-            image_attribute=proposal.image_attribute,
-        )
-    set_follow_profile(
-        source_id,
-        crawl_mode=proposal.crawl_mode,
-        listing_item_selector=proposal.listing_item_selector,
-        detail_link_selector=proposal.detail_link_selector,
-        detail_url_contains=proposal.detail_url_contains,
-        max_detail_pages=100,
-    )
-    with session_scope() as session:
-        set_source_enabled(session, source_id, True)
-    return source_id
+    return apply_assisted_proposal(proposal)
 
 
 def confirm_assisted_source(url: str = Form(...)):

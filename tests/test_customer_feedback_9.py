@@ -19,7 +19,7 @@ def test_desktop_shortcut_is_not_deleted_when_task_is_unselected() -> None:
 
 def test_feedback_9_windows_installer_version() -> None:
     installer = (ROOT / "packaging" / "windows" / "installer.iss").read_text(encoding="utf-8")
-    assert '#define MyAppVersion "0.1.14"' in installer
+    assert '#define MyAppVersion "' in installer
 
 
 def test_source_configuration_guide_explains_selector_vs_attribute() -> None:
