@@ -14,6 +14,12 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # DP-CUST-017 can create this auxiliary table as a runtime recovery step on
+    # an upgraded customer DB. Alembic must remain able to advance the revision
+    # afterwards instead of failing because the recovered table already exists.
+    inspector = sa.inspect(op.get_bind())
+    if "source_image_profiles" in inspector.get_table_names():
+        return
     op.create_table(
         "source_image_profiles",
         sa.Column(
@@ -41,4 +47,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_table("source_image_profiles")
+    inspector = sa.inspect(op.get_bind())
+    if "source_image_profiles" in inspector.get_table_names():
+        op.drop_table("source_image_profiles")
