@@ -74,15 +74,10 @@ def _telegram_collect_v17(self, source):
 
 
 def _render_offer_caption_v17(offer, publication_format=None) -> str:
+    # Respect explicit user publication-format choices. DP-CUST-017 fixes the
+    # missing promo at extraction/persistence time; it must not silently turn a
+    # field back on when the user intentionally disabled it in format settings.
     caption = _ORIGINAL_RENDER(offer, publication_format)
-    promo = str(getattr(offer, "promo_code", "") or "").strip()
-    # A promo code is a critical part of the offer, not optional decoration.
-    # Keep it in the outgoing post even if an old saved publication-format file
-    # accidentally disabled the configurable promo_code row.
-    if promo and "🎁 Промокод:" not in caption:
-        from html import escape
-
-        caption += f"\n🎁 Промокод: <code>{escape(promo[:64])}</code>"
 
     # Publication is an external boundary. Raw source text is not published by
     # design, and common named credentials/tokens are additionally redacted if
