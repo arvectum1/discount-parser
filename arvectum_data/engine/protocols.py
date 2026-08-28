@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-from typing import Protocol, Sequence
+from typing import TYPE_CHECKING, Protocol, Sequence
 
 from .models import Candidate, FieldSpec, RawAsset
+
+if TYPE_CHECKING:
+    from .records import RecordProviderResult
 
 
 class CandidateProvider(Protocol):
@@ -15,3 +18,15 @@ class CandidateProvider(Protocol):
         asset: RawAsset,
         fields: Sequence[FieldSpec],
     ) -> Sequence[Candidate]: ...
+
+
+class RecordProvider(Protocol):
+    """Proposes bounded record slices without deciding any field values."""
+
+    name: str
+
+    def records(
+        self,
+        asset: RawAsset,
+        fields: Sequence[FieldSpec],
+    ) -> RecordProviderResult: ...
