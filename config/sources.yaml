@@ -4,27 +4,32 @@ sources:
     adapter: promokood
     base_url: https://promokood.ru/
     enabled: true
+    runtime_mode: hybrid
 
   - key: promokodik
     name: Промокодик.ру
     adapter: promokodik
     base_url: https://promokodik.ru/
     enabled: true
+    runtime_mode: hybrid
 
   - key: berikod
     name: БериКод
     adapter: berikod
     base_url: https://berikod.ru/global/ru/
     enabled: true
+    runtime_mode: hybrid
 
   - key: promokodi_net_ru
     name: Промокоды.net.ru
     adapter: promokodi_net_ru
     base_url: https://promokodi.net.ru/ru/
     enabled: true
+    runtime_mode: hybrid
 
   - key: promko
     name: PROMKO.NET
     adapter: promko
     base_url: https://promko.net/ru
     enabled: true
+    runtime_mode: hybrid

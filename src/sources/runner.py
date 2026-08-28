@@ -16,6 +16,7 @@ from src.modules.offers.repository import OfferRepository
 from src.shared.db import session_scope
 from src.sources.base import RawOffer
 from src.sources.config import SourceConfig, load_source_configs
+from src.sources.engine_runtime import collect_source_offers
 from src.sources.registry import build_adapter
 
 
@@ -29,6 +30,12 @@ class RunResult:
     errors: int = 0
     duration_seconds: float = 0.0
     error: str | None = None
+    runtime_mode: str = "legacy"
+    engine_discovered_urls: int = 0
+    engine_selected_urls: int = 0
+    engine_decoded_pages: int = 0
+    engine_fallback_used: bool = False
+    runtime_warnings: tuple[str, ...] = ()
 
 
 def _ensure_source(session, config: SourceConfig) -> Source:
@@ -216,19 +223,28 @@ def _record_failed_collection(config: SourceConfig, error: Exception) -> RunResu
     with session_scope() as session:
         source = _ensure_source(session, config)
         session.add(ParseRun(source_id=source.id, status="failed", finished_at=datetime.now(UTC), error_count=1, error=message))
-    return RunResult(source_key=config.key, errors=1, error=message)
+    return RunResult(source_key=config.key, errors=1, error=message, runtime_mode=config.runtime_mode)
 
 
 def run_source(config: SourceConfig, *, city: str | None = None, region: str | None = None) -> RunResult:
     config = _effective_config(config)
     started = datetime.now(UTC)
     try:
-        collected = build_adapter(config).collect()
+        collection = collect_source_offers(config, adapter_factory=build_adapter)
     except Exception as exc:
         return _record_failed_collection(config, exc)
 
-    raw_offers = [raw for raw in collected if _raw_matches_geo(raw, city=city, region=region)]
-    result = RunResult(source_key=config.key, fetched=len(raw_offers))
+    raw_offers = [raw for raw in collection.offers if _raw_matches_geo(raw, city=city, region=region)]
+    result = RunResult(
+        source_key=config.key,
+        fetched=len(raw_offers),
+        runtime_mode=collection.runtime_mode,
+        engine_discovered_urls=collection.discovered_urls,
+        engine_selected_urls=collection.selected_urls,
+        engine_decoded_pages=collection.decoded_pages,
+        engine_fallback_used=collection.fallback_used,
+        runtime_warnings=collection.warnings,
+    )
     with session_scope() as session:
         source = _ensure_source(session, config)
         parse_run = ParseRun(source_id=source.id, status="running", fetched_count=result.fetched)
