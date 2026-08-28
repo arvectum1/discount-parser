@@ -10,6 +10,18 @@ from .models import (
     StoredResultRecord,
     StoredResultStatus,
 )
+from .record_sets import (
+    MULTI_RECORD_RESULT_SCHEMA_VERSION,
+    DurableRecordReviewCoordinator,
+    RecordResultCodec,
+    RecordResultRepository,
+    RecordReviewUpdate,
+    RecordSetManifest,
+    StoredRecordResult,
+    parse_record_storage_item_id,
+    record_set_storage_item_id,
+    record_storage_item_id,
+)
 from .stores import (
     InMemoryResultStore,
     JsonResultStore,
@@ -19,9 +31,15 @@ from .stores import (
 )
 
 __all__ = [
+    "MULTI_RECORD_RESULT_SCHEMA_VERSION",
     "RESULT_SCHEMA_VERSION",
+    "DurableRecordReviewCoordinator",
     "InMemoryResultStore",
     "JsonResultStore",
+    "RecordResultCodec",
+    "RecordResultRepository",
+    "RecordReviewUpdate",
+    "RecordSetManifest",
     "ResultCodec",
     "ResultConflictError",
     "ResultDefinitionMismatchError",
@@ -32,6 +50,10 @@ __all__ = [
     "ResultSerializationError",
     "ResultStore",
     "SQLiteResultStore",
+    "StoredRecordResult",
     "StoredResultRecord",
     "StoredResultStatus",
+    "parse_record_storage_item_id",
+    "record_set_storage_item_id",
+    "record_storage_item_id",
 ]
