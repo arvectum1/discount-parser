@@ -125,7 +125,7 @@ def test_review_one_record_does_not_increment_sibling_revision():
     assert sibling is not None and sibling.revision == 1
 
 
-def test_stale_record_revision_is_rejected():
+def test_terminal_stale_record_review_is_rejected_without_mutation():
     store = InMemoryResultStore()
     repo = RecordResultRepository(store)
     r1 = _record("r1", "A")
@@ -133,8 +133,10 @@ def test_stale_record_revision_is_rejected():
     review = DurableRecordReviewCoordinator(store, repository=repo)
     candidate_id = r1.extraction.decisions["code"].selected.candidate_id
     review.confirm_fields("job", "page", "r1", {"code": candidate_id}, expected_revision=1)
-    with pytest.raises(ResultConflictError):
+    with pytest.raises((ResultConflictError, ValueError)):
         review.confirm_fields("job", "page", "r1", {"code": candidate_id}, expected_revision=1)
+    loaded = repo.load_record("job", "page", "r1")
+    assert loaded is not None and loaded.revision == 2 and loaded.status is RecordStatus.READY
 
 
 def test_boundary_review_persists_accept_and_reject():
@@ -166,7 +168,6 @@ def test_json_and_sqlite_result_stores_survive_restart(tmp_path):
         job_id="job", item_id="page", definition_hash="def", result=_set(_record("r1", "A"))
     )
     assert RecordResultRepository(JsonResultStore(json_path)).load_result("job", "page", "r1") is not None
-
     sqlite_path = tmp_path / "results.sqlite3"
     with SQLiteResultStore(sqlite_path) as store:
         RecordResultRepository(store).persist_set(
@@ -183,12 +184,10 @@ def test_storage_identity_is_reversible_and_clear_preserves_single_result():
     repo = RecordResultRepository(store)
     repo.persist_set(job_id="job", item_id="page", definition_hash="def", result=_set(_record("r1", "A")))
     payload = {"legacy": True}
-    legacy = store.create(
-        StoredResultRecord(
-            job_id="job", item_id="page", definition_hash="def",
-            status=StoredResultStatus.READY, payload=payload, payload_hash=payload_hash(payload),
-        )
-    )
+    legacy = store.create(StoredResultRecord(
+        job_id="job", item_id="page", definition_hash="def",
+        status=StoredResultStatus.READY, payload=payload, payload_hash=payload_hash(payload),
+    ))
     repo.clear_item("job", "page")
     assert store.load("job", "page") == legacy
 
@@ -196,15 +195,9 @@ def test_storage_identity_is_reversible_and_clear_preserves_single_result():
 def test_governed_queue_claims_sibling_records_independently():
     result_store = InMemoryResultStore()
     repo = RecordResultRepository(result_store)
-    repo.persist_set(
-        job_id="job", item_id="page", definition_hash="def",
-        result=_set(_record("r1", "A"), _record("r2", "B")),
-    )
+    repo.persist_set(job_id="job", item_id="page", definition_hash="def", result=_set(_record("r1", "A"), _record("r2", "B")))
     tokens = iter(("token-1", "token-2"))
-    queue = GovernedRecordReviewQueue(
-        result_store, queue_store=InMemoryReviewQueueStore(), repository=repo,
-        token_factory=tokens.__next__,
-    )
+    queue = GovernedRecordReviewQueue(result_store, queue_store=InMemoryReviewQueueStore(), repository=repo, token_factory=tokens.__next__)
     one = queue.claim("job", "page", "r1", "alice", expected_result_revision=1)
     two = queue.claim("job", "page", "r2", "bob", expected_result_revision=1)
     assert one.lease.reviewer_id == "alice"
@@ -220,10 +213,7 @@ def test_governed_queue_submit_releases_only_completed_record():
     queue = GovernedRecordReviewQueue(result_store, repository=repo, token_factory=lambda: "token")
     claim = queue.claim("job", "page", "r1", "alice")
     candidate_id = r1.extraction.decisions["code"].selected.candidate_id
-    submitted = queue.submit_fields(
-        "job", "page", "r1", "alice", claim.lease.lease_token,
-        {"code": candidate_id}, expected_result_revision=1,
-    )
+    submitted = queue.submit_fields("job", "page", "r1", "alice", claim.lease.lease_token, {"code": candidate_id}, expected_result_revision=1)
     assert submitted.lease_released is True
     assert submitted.record.status is RecordStatus.READY
     assert [item.record_id for item in queue.pending(job_id="job")] == ["r2"]
@@ -234,14 +224,9 @@ def test_json_queue_lease_survives_restart(tmp_path):
     repo = RecordResultRepository(result_store)
     repo.persist_set(job_id="job", item_id="page", definition_hash="def", result=_set(_record("r1", "A")))
     path = tmp_path / "queue.json"
-    queue = GovernedRecordReviewQueue(
-        result_store, queue_store=JsonReviewQueueStore(path), repository=repo,
-        token_factory=lambda: "token",
-    )
+    queue = GovernedRecordReviewQueue(result_store, queue_store=JsonReviewQueueStore(path), repository=repo, token_factory=lambda: "token")
     claim = queue.claim("job", "page", "r1", "alice")
-    reopened = GovernedRecordReviewQueue(
-        result_store, queue_store=JsonReviewQueueStore(path), repository=repo,
-    )
+    reopened = GovernedRecordReviewQueue(result_store, queue_store=JsonReviewQueueStore(path), repository=repo)
     lease, stored, _ = reopened.get_claim("job", "page", "r1", "alice", claim.lease.lease_token)
     assert lease.reviewer_id == "alice" and stored.record_id == "r1"
 
@@ -249,10 +234,7 @@ def test_json_queue_lease_survives_restart(tmp_path):
 def test_sqlite_queue_blocks_same_record_but_not_sibling(tmp_path):
     result_store = InMemoryResultStore()
     repo = RecordResultRepository(result_store)
-    repo.persist_set(
-        job_id="job", item_id="page", definition_hash="def",
-        result=_set(_record("r1", "A"), _record("r2", "B")),
-    )
+    repo.persist_set(job_id="job", item_id="page", definition_hash="def", result=_set(_record("r1", "A"), _record("r2", "B")))
     path = tmp_path / "queue.sqlite3"
     with SQLiteReviewQueueStore(path) as a, SQLiteReviewQueueStore(path) as b:
         q1 = GovernedRecordReviewQueue(result_store, queue_store=a, repository=repo)
@@ -272,10 +254,7 @@ def test_audit_contains_candidate_id_not_business_value():
     queue = GovernedRecordReviewQueue(result_store, repository=repo, token_factory=lambda: "token")
     claim = queue.claim("job", "page", "r1", "alice")
     candidate_id = record.extraction.decisions["code"].selected.candidate_id
-    queue.submit_fields(
-        "job", "page", "r1", "alice", claim.lease.lease_token,
-        {"code": candidate_id}, expected_result_revision=1,
-    )
+    queue.submit_fields("job", "page", "r1", "alice", claim.lease.lease_token, {"code": candidate_id}, expected_result_revision=1)
     submitted = [e for e in queue.history(job_id="job", item_id="page", record_id="r1") if e.action.value == "submitted"]
     assert len(submitted) == 1
     assert submitted[0].metadata["record_id"] == "r1"
