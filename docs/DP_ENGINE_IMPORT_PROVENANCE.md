@@ -28,6 +28,14 @@ During the first target regression run, `tests/test_orchestration.py` exposed pr
 
 This is a snapshot port rooted in Discount Parser history, not an unrelated-history merge. The source repository and exact source SHA remain recorded as provenance. Current customer/product integration work is owned by Discount Parser. Data Platform remains intact as reusable-engine provenance and may receive explicitly promoted domain-neutral improvements later.
 
+## Post-import canonical continuation
+
+The Data Platform snapshot is provenance for **DP-ENGINE-001..011 only**.
+
+Starting with **DP-ENGINE-012**, new product-development commits, task contracts and regression evidence are authored canonically in `arvectum1/discount-parser` from the reconciled Discount Parser `main` line.
+
+Future reusable improvements may be explicitly promoted/reconciled back to `arvectum1/data-platform`, but Data Platform is not the source of truth for post-import product-specific DP Engine work unless a later reconciliation task states otherwise.
+
 ## Readiness boundary
 
 Import and regression PASS do not by themselves mean the engine is wired into the customer production runtime. Runtime wiring, replacement/adaptation of legacy source-specific paths, browser packaging and customer acceptance remain separate governed integration work.

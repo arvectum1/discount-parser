@@ -8,6 +8,14 @@ from .models import (
     CrawlPageRecord,
     CrawlPolicy,
 )
+from .relevance import (
+    RelevanceEvidence,
+    TargetPageAssessment,
+    TargetPageClassifier,
+    TargetPageDiscoveryResult,
+    TargetPagePolicy,
+    TargetPageStatus,
+)
 
 __all__ = [
     "DEFAULT_BLOCKED_SUFFIXES",
@@ -17,6 +25,12 @@ __all__ = [
     "CrawlPageRecord",
     "CrawlPolicy",
     "ParsedAnchor",
+    "RelevanceEvidence",
+    "TargetPageAssessment",
+    "TargetPageClassifier",
+    "TargetPageDiscoveryResult",
+    "TargetPagePolicy",
+    "TargetPageStatus",
     "URLDiscoveryCrawler",
     "canonicalize_url",
     "extract_anchors",
