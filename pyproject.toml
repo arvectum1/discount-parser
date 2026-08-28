@@ -37,7 +37,7 @@ dev = [
 package-dir = {"" = "."}
 
 [tool.setuptools.packages.find]
-include = ["src*"]
+include = ["src*", "arvectum_data*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
