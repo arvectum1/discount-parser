@@ -1,0 +1,112 @@
+name: Port DP Engine snapshot
+
+on:
+  push:
+    branches:
+      - feature/dp-engine-001-011-port
+    paths:
+      - .github/workflows/port-dp-engine-snapshot.yml
+
+permissions:
+  contents: write
+
+jobs:
+  port:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Discount Parser target
+        uses: actions/checkout@v4
+        with:
+          path: target
+          fetch-depth: 0
+
+      - name: Checkout canonical DP Engine source snapshot
+        uses: actions/checkout@v4
+        with:
+          repository: arvectum1/data-platform
+          ref: 7b33e445cb93e0dc4088b3a31b5dc53c80823f2d
+          path: source
+          fetch-depth: 1
+
+      - name: Port engine snapshot into Discount Parser history
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SOURCE_SHA="$(git -C source rev-parse HEAD)"
+          test "$SOURCE_SHA" = "7b33e445cb93e0dc4088b3a31b5dc53c80823f2d"
+
+          rm -rf target/arvectum_data target/tests/dp_engine
+          mkdir -p target/arvectum_data target/tests/dp_engine target/docs/tasks
+
+          cp -a source/src/arvectum_data/. target/arvectum_data/
+          cp -a source/tests/test_*.py target/tests/dp_engine/
+          cp -a source/docs/tasks/DP-ENGINE-*.md target/docs/tasks/
+
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("target/pyproject.toml")
+          text = path.read_text(encoding="utf-8")
+          old = 'include = ["src*"]'
+          new = 'include = ["src*", "arvectum_data*"]'
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif new not in text:
+              raise SystemExit("Unexpected setuptools package discovery configuration")
+          path.write_text(text, encoding="utf-8")
+          PY
+
+          cat > target/docs/DP_ENGINE_IMPORT_PROVENANCE.md <<'EOF'
+          # DP Engine import provenance
+
+          **Target:** `arvectum1/discount-parser`
+
+          **Target base:** `discount-parser/main` at `af0521a7a5598440d71ff13e60181764e4d86fe6` (`DP-CUST-017`).
+
+          **Source:** `arvectum1/data-platform`
+
+          **Source snapshot:** `7b33e445cb93e0dc4088b3a31b5dc53c80823f2d` (`DP-ENGINE-011`).
+
+          This snapshot contains the cumulative implementation of `DP-ENGINE-001` through `DP-ENGINE-011` developed and reviewed in Data Platform PRs #1-#12 on 2026-08-28.
+
+          ## Imported scope
+
+          - `src/arvectum_data/**` -> `arvectum_data/**` in Discount Parser, preserving module contents while adapting only the package location to the existing Discount Parser packaging layout;
+          - Data Platform engine regression files -> `tests/dp_engine/**`;
+          - `docs/tasks/DP-ENGINE-001.md` through `DP-ENGINE-011.md` -> `docs/tasks/**`.
+
+          Data Platform repository infrastructure, mirror workflows, README, license and project-level `pyproject.toml` are intentionally not imported.
+
+          ## Authority / history boundary
+
+          The Discount Parser copy is rooted in Discount Parser history and does not merge unrelated Data Platform Git history into `discount-parser/main`. The source repository and source SHA remain explicit provenance. Future Discount Parser integration changes should be developed and reviewed in `arvectum1/discount-parser` while reusable domain-neutral improvements may later be promoted back to Data Platform through an explicit reconciliation step.
+
+          ## Current integration status
+
+          Snapshot import alone does not claim that the new engine is wired into the customer production runtime. Runtime wiring, packaging/browser dependencies, migration from legacy source-specific paths, and full customer acceptance remain separate integration work.
+          EOF
+
+          rm -f target/.github/workflows/port-dp-engine-snapshot.yml
+
+      - name: Validate imported engine snapshot in target repository
+        shell: bash
+        working-directory: target
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install "pytest>=8.3,<9.0"
+          python -m compileall -q arvectum_data tests/dp_engine
+          python -m pytest tests/dp_engine -q
+
+      - name: Commit port to Discount Parser branch
+        shell: bash
+        working-directory: target
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add arvectum_data tests/dp_engine docs/tasks docs/DP_ENGINE_IMPORT_PROVENANCE.md pyproject.toml .github/workflows/port-dp-engine-snapshot.yml
+          git diff --cached --check
+          git commit -m "feat(engine): port DP-ENGINE-001..011 into Discount Parser" -m "Source: arvectum1/data-platform@7b33e445cb93e0dc4088b3a31b5dc53c80823f2d"
+          git push origin HEAD:feature/dp-engine-001-011-port
