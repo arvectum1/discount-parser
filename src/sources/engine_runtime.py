@@ -27,6 +27,11 @@ from src.modules.source_registry.known_site_crawl import discover_promokood_deta
 from src.shared.network import NetworkRouteError, network_router
 from src.sources.base import RawOffer
 from src.sources.config import SourceConfig
+from src.sources.generic_multi_record import (
+    GenericMultiRecordOfferDecoder,
+    SourceParityReport,
+    compare_offer_sets,
+)
 from src.sources.registry import build_adapter
 
 
@@ -87,6 +92,9 @@ class SourceCollectionResult:
     decoded_pages: int = 0
     fallback_used: bool = False
     warnings: tuple[str, ...] = ()
+    generic_pages: int = 0
+    legacy_pages: int = 0
+    parity_failures: int = 0
 
 
 class DiscountParserHTTPTransport:
@@ -97,8 +105,8 @@ class DiscountParserHTTPTransport:
     application-owned ``network_router`` into the DP ``HTTPTransport`` contract.
 
     Successful responses are cached only for the lifetime of one source run so
-    crawl, relevance probing and adapter decoding do not repeatedly download the
-    same page. No cache survives the run and no credentials are persisted.
+    crawl, relevance probing and decoding do not repeatedly download the same
+    page. No cache survives the run and no credentials are persisted.
     """
 
     name = "discount-parser-network-router"
@@ -184,16 +192,19 @@ AdapterFactory = Callable[[SourceConfig], object]
 
 
 class ProductionSourceRuntime:
-    """Hybrid production bridge from DP discovery to existing multi-offer decoders.
+    """Governed production bridge from generic discovery to multi-offer records.
 
-    DP-ENGINE-001..012 currently resolve one semantic value per ``FieldSpec``.
-    Discount Parser pages, however, commonly contain many independent offers.
-    Until a generic multi-record extraction contract exists, the proven adapter
-    ``parse(html)`` implementations remain the final bounded record decoder.
+    DP-ENGINE-016 runs the generic DP-014 multi-record decoder on each already
+    acquired target page. During migration, the existing source adapter parses
+    that same in-memory HTML as a safety oracle. Generic records are returned to
+    production only when the page-level parity check proves they preserve every
+    legacy-populated business field and the exact record identity set.
 
-    The new engine owns page discovery, relevance selection and acquisition. The
-    legacy ``collect()`` path is retained only as a safety fallback when the
-    engine cannot produce any offer records.
+    A mismatch, review-required/incomplete generic record, or generic exception
+    automatically selects the legacy decode for that page. This adds no network
+    request and exposes no site-specific control to the customer. The adapter is
+    therefore a temporary migration oracle rather than the default returned
+    decoder whenever parity succeeds.
     """
 
     def __init__(
@@ -203,6 +214,7 @@ class ProductionSourceRuntime:
         policy: ProductionSourcePolicy | None = None,
         transport: DiscountParserHTTPTransport | None = None,
         adapter_factory: AdapterFactory = build_adapter,
+        generic_decoder: GenericMultiRecordOfferDecoder | None = None,
     ) -> None:
         self.config = config
         self.policy = policy or ProductionSourcePolicy()
@@ -210,6 +222,7 @@ class ProductionSourceRuntime:
             network_policy=config.network_policy
         )
         self.adapter_factory = adapter_factory
+        self.generic_decoder = generic_decoder or GenericMultiRecordOfferDecoder()
         # Browser execution is deliberately not forced into the shipped client.
         # Static acquisition remains routed through the application's proxy/VPN
         # logic; optional browser packaging can be added later without changing
@@ -251,7 +264,14 @@ class ProductionSourceRuntime:
             )
             relevance = classifier.classify(discovery)
             selected = relevance.urls(include_candidates=True)
-            offers, decoded_pages, decode_warnings = self._decode_selected(selected, relevance.assessments)
+            (
+                offers,
+                decoded_pages,
+                decode_warnings,
+                generic_pages,
+                legacy_pages,
+                parity_failures,
+            ) = self._decode_selected(selected, relevance.assessments)
             warnings.extend(decode_warnings)
             if offers:
                 return SourceCollectionResult(
@@ -261,6 +281,9 @@ class ProductionSourceRuntime:
                     selected_urls=len(selected),
                     decoded_pages=decoded_pages,
                     warnings=tuple(warnings),
+                    generic_pages=generic_pages,
+                    legacy_pages=legacy_pages,
+                    parity_failures=parity_failures,
                 )
             warnings.append("engine_no_offers:legacy_fallback")
         except Exception as exc:
@@ -328,12 +351,15 @@ class ProductionSourceRuntime:
         self,
         selected: tuple[str, ...],
         assessments: tuple[TargetPageAssessment, ...],
-    ) -> tuple[list[RawOffer], int, list[str]]:
+    ) -> tuple[list[RawOffer], int, list[str], int, int, int]:
         by_url = {item.url: item for item in assessments}
         offers: list[RawOffer] = []
         warnings: list[str] = []
         seen: set[tuple[str, str]] = set()
         decoded_pages = 0
+        generic_pages = 0
+        legacy_pages = 0
+        parity_failures = 0
 
         for page_url in selected:
             try:
@@ -348,9 +374,10 @@ class ProductionSourceRuntime:
                 html = acquired.asset.html
                 if not html:
                     continue
+                effective_url = acquired.asset.source_url or page_url
                 page_config = replace(
                     self.config,
-                    base_url=acquired.asset.source_url or page_url,
+                    base_url=effective_url,
                     runtime_mode="legacy",
                 )
                 adapter = self.adapter_factory(page_config)
@@ -358,24 +385,68 @@ class ProductionSourceRuntime:
                 if not callable(parser):
                     warnings.append(f"decoder_missing:{page_url}")
                     continue
-                decoded = list(parser(html))
+
+                legacy_decoded = list(parser(html))
                 decoded_pages += 1
+                chosen = legacy_decoded
+                decoder_name = "legacy_adapter"
+                parity: SourceParityReport | None = None
+
+                try:
+                    generic = self.generic_decoder.decode(
+                        html,
+                        page_url=effective_url,
+                        source_key=self.config.key,
+                    )
+                    if generic.usable:
+                        parity = compare_offer_sets(legacy_decoded, generic.offers)
+                        if parity.safe_to_adopt:
+                            chosen = list(generic.offers)
+                            decoder_name = "generic_multi_record"
+                            generic_pages += 1
+                        else:
+                            legacy_pages += 1
+                            parity_failures += 1
+                            warnings.append(
+                                f"generic_parity_fallback:{page_url}:{parity.diagnostic()}"
+                            )
+                    else:
+                        legacy_pages += 1
+                        parity_failures += 1
+                        detail = ",".join(generic.warnings[:4]) or "no_ready_records"
+                        warnings.append(f"generic_not_ready_fallback:{page_url}:{detail}")
+                except Exception as exc:
+                    legacy_pages += 1
+                    parity_failures += 1
+                    warnings.append(f"generic_decode_fallback:{_diagnostic(exc)}")
+
                 assessment = by_url.get(page_url)
-                for raw in decoded:
+                for raw in chosen:
                     identity = (raw.source_key, raw.external_id)
                     if identity in seen:
                         continue
                     seen.add(identity)
-                    offers.append(self._with_engine_provenance(raw, page_url, assessment))
+                    offers.append(
+                        self._with_engine_provenance(
+                            raw,
+                            page_url,
+                            assessment,
+                            decoder=decoder_name,
+                            parity=parity,
+                        )
+                    )
             except Exception as exc:
                 warnings.append(f"page_decode_failed:{_diagnostic(exc)}")
-        return offers, decoded_pages, warnings
+        return offers, decoded_pages, warnings, generic_pages, legacy_pages, parity_failures
 
     @staticmethod
     def _with_engine_provenance(
         raw: RawOffer,
         page_url: str,
         assessment: TargetPageAssessment | None,
+        *,
+        decoder: str,
+        parity: SourceParityReport | None,
     ) -> RawOffer:
         payload = dict(raw.raw_payload or {})
         evidence = []
@@ -389,14 +460,22 @@ class ProductionSourceRuntime:
                 }
                 for item in assessment.evidence[:12]
             ]
-        payload["dp_engine"] = {
-            "runtime": "hybrid",
-            "page_url": page_url,
-            "target_status": assessment.status.value if assessment else None,
-            "target_score": assessment.score if assessment else None,
-            "probed": assessment.probed if assessment else None,
-            "evidence": evidence,
-        }
+        engine_meta = dict(payload.get("dp_engine") or {})
+        engine_meta.update(
+            {
+                "runtime": "hybrid",
+                "decoder": decoder,
+                "page_url": page_url,
+                "target_status": assessment.status.value if assessment else None,
+                "target_score": assessment.score if assessment else None,
+                "probed": assessment.probed if assessment else None,
+                "evidence": evidence,
+                "parity_safe": parity.safe_to_adopt if parity is not None else None,
+                "parity_legacy_count": parity.legacy_count if parity is not None else None,
+                "parity_generic_count": parity.generic_count if parity is not None else None,
+            }
+        )
+        payload["dp_engine"] = engine_meta
         return replace(raw, raw_payload=payload)
 
 
