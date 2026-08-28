@@ -1,5 +1,6 @@
 from .discovery import AutoDiscoveryProvider
 from .engine import ExtractionEngine
+from .html_records import SemanticHTMLRecordProvider
 from .models import (
     Candidate,
     Evidence,
@@ -46,5 +47,6 @@ __all__ = [
     "RecordProviderResult",
     "RecordSetResult",
     "RecordStatus",
+    "SemanticHTMLRecordProvider",
     "make_record_id",
 ]
