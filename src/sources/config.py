@@ -7,6 +7,7 @@ import yaml
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 NETWORK_POLICIES = {"auto", "direct", "proxy", "system"}
+RUNTIME_MODES = {"legacy", "hybrid"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,6 +18,7 @@ class SourceConfig:
     base_url: str
     enabled: bool = True
     network_policy: str = "auto"
+    runtime_mode: str = "legacy"
 
 
 def _resolve_config_path(path: str | Path) -> Path:
@@ -34,6 +36,11 @@ def _network_policy(value: object) -> str:
     return policy if policy in NETWORK_POLICIES else "auto"
 
 
+def _runtime_mode(value: object) -> str:
+    mode = str(value or "legacy").strip().lower()
+    return mode if mode in RUNTIME_MODES else "legacy"
+
+
 def load_source_configs(path: str | Path = "config/sources.yaml") -> list[SourceConfig]:
     config_path = _resolve_config_path(path)
     data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
@@ -47,6 +54,7 @@ def load_source_configs(path: str | Path = "config/sources.yaml") -> list[Source
                 base_url=str(item["base_url"]),
                 enabled=bool(item.get("enabled", True)),
                 network_policy=_network_policy(item.get("network_policy")),
+                runtime_mode=_runtime_mode(item.get("runtime_mode")),
             )
         )
     return result
@@ -69,5 +77,6 @@ def set_source_enabled(key: str, enabled: bool, path: str | Path = "config/sourc
                 base_url=str(item["base_url"]),
                 enabled=bool(item["enabled"]),
                 network_policy=_network_policy(item.get("network_policy")),
+                runtime_mode=_runtime_mode(item.get("runtime_mode")),
             )
     raise KeyError(f"Unknown source: {key}")
