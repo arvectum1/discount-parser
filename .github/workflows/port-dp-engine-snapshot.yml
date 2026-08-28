@@ -44,15 +44,31 @@ jobs:
 
           python - <<'PY'
           from pathlib import Path
-          path = Path('target/pyproject.toml')
-          text = path.read_text(encoding='utf-8')
+
+          # Discount Parser uses repository-root package discovery. Keep the
+          # production DP Engine package byte-identical while adapting only its
+          # location/package discovery to the target repository layout.
+          project = Path('target/pyproject.toml')
+          text = project.read_text(encoding='utf-8')
           old = 'include = ["src*"]'
           new = 'include = ["src*", "arvectum_data*"]'
           if old in text:
               text = text.replace(old, new, 1)
           elif new not in text:
               raise SystemExit('Unexpected setuptools package discovery configuration')
-          path.write_text(text, encoding='utf-8')
+          project.write_text(text, encoding='utf-8')
+
+          # Source test debt discovered by the target regression gate:
+          # the real ExtractionResult contract requires `decisions`, while this
+          # orchestration test double predates that required field. Adapt the
+          # test double only; production engine files remain byte-identical.
+          test_file = Path('target/tests/dp_engine/test_orchestration.py')
+          test_text = test_file.read_text(encoding='utf-8')
+          needle = '        self.asset = asset\n        self.requires_confirmation = requires_confirmation\n'
+          replacement = '        self.asset = asset\n        self.decisions = {}\n        self.requires_confirmation = requires_confirmation\n'
+          if needle not in test_text:
+              raise SystemExit('Expected FakeExtractionResult shape not found')
+          test_file.write_text(test_text.replace(needle, replacement, 1), encoding='utf-8')
           PY
 
           cat > target/docs/DP_ENGINE_IMPORT_PROVENANCE.md <<'EOF'
@@ -75,6 +91,12 @@ jobs:
           - `data-platform/docs/tasks/DP-ENGINE-001.md` through `DP-ENGINE-011.md` -> `discount-parser/docs/tasks/**`.
 
           Data Platform repository-level README, license, GitHub workflows, mirror configuration and project `pyproject.toml` are intentionally not imported.
+
+          ## Integration adaptations
+
+          Production files under `arvectum_data/**` are copied byte-for-byte from the source snapshot. The target packaging configuration is extended to discover the top-level `arvectum_data` package because Discount Parser uses repository-root package discovery.
+
+          During the first target regression run, `tests/test_orchestration.py` exposed pre-existing source test debt: its `FakeExtractionResult` predated the required `ExtractionResult.decisions` field. The imported test double is therefore given `decisions = {}` so it conforms to the production interface. No production engine behavior is changed by this adaptation.
 
           ## History and ownership boundary
 
