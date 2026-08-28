@@ -9,11 +9,24 @@ from .models import (
     FieldStatus,
     RawAsset,
 )
-from .protocols import CandidateProvider
+from .protocols import CandidateProvider, RecordProvider
 from .providers import AttributeProvider
+from .records import (
+    AttributeRecordProvider,
+    JSONLDRecordProvider,
+    MultiRecordExtractionEngine,
+    RecordBoundary,
+    RecordBoundaryStatus,
+    RecordExtractionResult,
+    RecordProviderResult,
+    RecordSetResult,
+    RecordStatus,
+    make_record_id,
+)
 
 __all__ = [
     "AttributeProvider",
+    "AttributeRecordProvider",
     "AutoDiscoveryProvider",
     "Candidate",
     "CandidateProvider",
@@ -23,5 +36,15 @@ __all__ = [
     "FieldDecision",
     "FieldSpec",
     "FieldStatus",
+    "JSONLDRecordProvider",
+    "MultiRecordExtractionEngine",
     "RawAsset",
+    "RecordBoundary",
+    "RecordBoundaryStatus",
+    "RecordExtractionResult",
+    "RecordProvider",
+    "RecordProviderResult",
+    "RecordSetResult",
+    "RecordStatus",
+    "make_record_id",
 ]
