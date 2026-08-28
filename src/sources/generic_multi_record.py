@@ -32,7 +32,7 @@ _ACTION_ACTIVATE_RE = re.compile(
 )
 _ACTION_OPEN_RE = re.compile(r"(?:открыть|показать)\s+(?:промокод|акци\w*)", re.IGNORECASE)
 _BENEFIT_RE = re.compile(
-    r"\b(?:доп\.?\s*)?(?:скидк\w*|промокод\w*|бонус\w*|к[еэ]шб\w*|бесплат\w*)\b",
+    r"\b(?:доп\.?\s*)?(?:скидк\w*|промокод\w*|бонус\w*|к[еэ]шб\w*|бесплат\w*|подар\w*|сертификат\w*)\b",
     re.IGNORECASE,
 )
 _SUMMARY_RE = re.compile(r"^(.+?)\s*до\s*(\d{1,3})\s*%$", re.IGNORECASE)
@@ -113,7 +113,6 @@ class DiscountOfferCandidateProvider:
 
         heading = _compact(attrs.get("record_heading")) or None
         strong = _compact(attrs.get("record_strong")) or None
-        link_text = _compact(attrs.get("record_link_text")) or None
         href = _compact(attrs.get("record_href")) or None
         image_src = _compact(attrs.get("record_image_src")) or None
         image_alt = _compact(attrs.get("record_image_alt")) or None
@@ -219,13 +218,16 @@ class DiscountOfferCandidateProvider:
             value = _compact(str(data.get(key) or ""))
             if value and not re.fullmatch(r"[•*\s]+", value):
                 return value[:120]
+        # Explicit structural code-like content is stronger evidence than prose
+        # immediately following the word "промокод"; the latter may be a
+        # discount amount such as "промокодом -5000 ₽".
+        if strong and _CODE_TOKEN_RE.fullmatch(strong) and strong.upper() not in _STOP_CODES:
+            return strong
         match = _CODE_AFTER_LABEL_RE.search(text)
         if match:
             value = match.group(1)
             if value.upper() not in _STOP_CODES:
                 return value
-        if strong and _CODE_TOKEN_RE.fullmatch(strong) and strong.upper() not in _STOP_CODES:
-            return strong
         return None
 
     @staticmethod
@@ -412,7 +414,13 @@ def compare_offer_sets(
                     )
                 )
 
-    safe = not missing and not extra and not mismatches and len(legacy_by_id) == len(legacy) and len(generic_by_id) == len(generic)
+    safe = (
+        not missing
+        and not extra
+        and not mismatches
+        and len(legacy_by_id) == len(legacy)
+        and len(generic_by_id) == len(generic)
+    )
     return SourceParityReport(
         safe_to_adopt=safe,
         legacy_count=len(legacy),
