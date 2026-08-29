@@ -23,7 +23,8 @@ from src.sources.adapters.common import external_id, parse_amount, parse_percent
 from src.sources.base import RawOffer
 
 _ACTION_SUFFIX_RE = re.compile(
-    r"\s+(?:активировать|получить|применить|использовать)\s+промокод.*$",
+    r"\s+(?:открыть|показать|активировать|получить|применить|использовать|скопировать)\s+"
+    r"(?:промокод\w*|код\b|акци\w*).*$",
     re.IGNORECASE,
 )
 _ACTION_ACTIVATE_RE = re.compile(
@@ -113,7 +114,15 @@ class DiscountOfferCandidateProvider:
 
         heading = _compact(attrs.get("record_heading")) or None
         strong = _compact(attrs.get("record_strong")) or None
-        href = _compact(attrs.get("record_href")) or None
+        record_href = _compact(attrs.get("record_href")) or None
+        action_href = _compact(attrs.get("record_action_href")) or None
+        anchor_kind = _compact(attrs.get("record_anchor_kind")).casefold()
+        if anchor_kind == "action":
+            href = action_href
+        elif anchor_kind == "heading":
+            href = action_href or record_href
+        else:
+            href = record_href
         image_src = _compact(attrs.get("record_image_src")) or None
         image_alt = _compact(attrs.get("record_image_alt")) or None
         record_tag = _compact(attrs.get("record_tag")).casefold()
@@ -218,9 +227,6 @@ class DiscountOfferCandidateProvider:
             value = _compact(str(data.get(key) or ""))
             if value and not re.fullmatch(r"[•*\s]+", value):
                 return value[:120]
-        # Explicit structural code-like content is stronger evidence than prose
-        # immediately following the word "промокод"; the latter may be a
-        # discount amount such as "промокодом -5000 ₽".
         if strong and _CODE_TOKEN_RE.fullmatch(strong) and strong.upper() not in _STOP_CODES:
             return strong
         match = _CODE_AFTER_LABEL_RE.search(text)
@@ -400,8 +406,6 @@ def compare_offer_sets(
         for field_name in _PARITY_FIELDS:
             legacy_value = getattr(expected, field_name)
             if legacy_value is None:
-                # Generic extraction may safely enrich a legacy-null field. The
-                # migration gate is lossless, not artificially information-poor.
                 continue
             generic_value = getattr(candidate, field_name)
             if _parity_value(legacy_value) != _parity_value(generic_value):
