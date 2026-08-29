@@ -1,4 +1,4 @@
-name: DP-ENGINE-019 record identity probe
+name: DP-ENGINE-019 apply identity-aware pruning
 
 on:
   push:
@@ -8,166 +8,30 @@ on:
       - .github/workflows/dp-engine-019-probe.yml
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  inspect:
-    name: identity probe (${{ matrix.source }})
+  apply:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
-    strategy:
-      fail-fast: false
-      matrix:
-        source:
-          - promokood
-          - promokodik
-          - berikod
-          - promokodi_net_ru
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-          cache: pip
-      - name: Install
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
-      - name: Inspect first live parity page
+          ref: feat/dp-engine-019
+          fetch-depth: 0
+      - name: Apply staged pruning
+        run: python .github/dp_engine_019_remediate.py
+      - name: Install package
+        run: python -m pip install -e ".[dev]"
+      - name: Verify semantic regressions
+        run: pytest -q tests/dp_engine/test_semantic_html_records.py tests/dp_engine/test_live_semantic_remediation.py
+      - name: Commit product changes
         shell: bash
         run: |
-          python - <<'PY'
-          from collections import Counter, defaultdict
-          from dataclasses import replace
-          import re
-
-          from arvectum_data.acquisition import AcquisitionRequest, RenderMode
-          from arvectum_data.engine import RecordStatus
-          from src.sources.config import load_source_configs
-          from src.sources.engine_runtime import ProductionSourceRuntime
-          from src.sources.registry import build_adapter
-
-          source_key = "${{ matrix.source }}"
-          config = next(item for item in load_source_configs() if item.key == source_key)
-          runtime = ProductionSourceRuntime(config)
-          collection = runtime.collect()
-          warning = next(
-              (item for item in collection.warnings if item.startswith("generic_parity_fallback:")),
-              None,
-          )
-          if warning is None:
-              print(f"SOURCE={source_key} NO_PARITY_WARNING warnings={collection.warnings[:6]}")
-              raise SystemExit(0)
-          match = re.match(r"generic_parity_fallback:(https?://.*?):legacy=", warning)
-          if not match:
-              raise SystemExit(f"cannot parse parity warning: {warning[:500]}")
-          page_url = match.group(1)
-          acquired = runtime.acquisition.acquire(
-              AcquisitionRequest(
-                  url=page_url,
-                  timeout_s=runtime.policy.timeout_s,
-                  max_bytes=runtime.policy.max_bytes,
-                  render_mode=RenderMode.AUTO,
-              )
-          )
-          html = acquired.asset.html or ""
-          effective_url = acquired.asset.source_url or page_url
-          adapter = build_adapter(replace(config, base_url=effective_url, runtime_mode="legacy"))
-          legacy = list(adapter.parse(html))
-          generic = runtime.generic_decoder.decode(html, page_url=effective_url, source_key=source_key)
-
-          def compact(value, limit=110):
-              text = re.sub(r"\s+", " ", str(value or "")).strip()
-              return text if len(text) <= limit else text[: limit - 3] + "..."
-
-          def machine(attrs):
-              data = dict(attrs.get("record_data") or {})
-              return {
-                  key: compact(value, 70)
-                  for key, value in sorted(data.items())
-                  if any(token in key.casefold() for token in ("coupon", "offer", "promo", "code", "id"))
-              }
-
-          print(
-              f"SOURCE={source_key} PAGE={page_url} LEGACY={len(legacy)} "
-              f"GENERIC_OFFERS={len(generic.offers)} RECORDS={len(generic.records.records)}"
-          )
-          print("LEGACY_SAMPLE")
-          for item in legacy[:12]:
-              print(
-                  "L",
-                  compact(item.external_id, 80),
-                  "|title=", compact(item.title),
-                  "|url=", compact(item.source_url, 100),
-                  "|merchant=", compact(item.merchant, 70),
-                  "|promo=", compact(item.promo_code, 50),
-              )
-
-          print("GENERIC_RECORD_SAMPLE")
-          for record in generic.records.records[:32]:
-              attrs = dict(record.boundary.asset.attributes)
-              values = record.values() if record.status is RecordStatus.READY else {}
-              print(
-                  "G",
-                  record.status.value,
-                  compact(record.boundary.source_ref, 70),
-                  "|kind=", attrs.get("record_anchor_kind"),
-                  "|tag=", attrs.get("record_tag"),
-                  "|href=", compact(attrs.get("record_href"), 90),
-                  "|action_href=", compact(attrs.get("record_action_href"), 90),
-                  "|action=", compact(attrs.get("record_action_text"), 70),
-                  "|heading=", compact(attrs.get("record_heading"), 90),
-                  "|strong=", compact(attrs.get("record_strong"), 70),
-                  "|machine=", machine(attrs),
-                  "|id=", compact(values.get("external_id"), 80),
-                  "|title=", compact(values.get("title"), 100),
-                  "|url=", compact(values.get("source_url"), 90),
-                  "|merchant=", compact(values.get("merchant"), 70),
-                  "|promo=", compact(values.get("promo_code"), 50),
-              )
-
-          groups = defaultdict(list)
-          for record in generic.records.records:
-              attrs = dict(record.boundary.asset.attributes)
-              values = record.values() if record.status is RecordStatus.READY else {}
-              data = machine(attrs)
-              strong_keys = []
-              for key, value in data.items():
-                  if value:
-                      strong_keys.append(("machine", key, value))
-              action_href = compact(attrs.get("record_action_href"), 150)
-              record_href = compact(attrs.get("record_href"), 150)
-              heading = compact(attrs.get("record_heading"), 150).casefold()
-              if "offer_id=" in action_href:
-                  strong_keys.append(("offer_id", action_href.split("offer_id=",1)[1].split("&",1)[0]))
-              if heading and (action_href or record_href):
-                  strong_keys.append(("heading_href", heading, action_href or record_href))
-              external = compact(values.get("external_id"), 120)
-              if external:
-                  strong_keys.append(("external_id", external))
-              for key in strong_keys:
-                  groups[key].append(record)
-
-          duplicate_groups = [(key, rows) for key, rows in groups.items() if len(rows) > 1]
-          duplicate_groups.sort(key=lambda item: (-len(item[1]), repr(item[0])))
-          print(f"DUPLICATE_GROUPS={len(duplicate_groups)}")
-          for key, rows in duplicate_groups[:20]:
-              print(
-                  "DUP",
-                  key,
-                  "COUNT=", len(rows),
-                  "KINDS=", [row.boundary.asset.attributes.get("record_anchor_kind") for row in rows[:8]],
-                  "REFS=", [compact(row.boundary.source_ref, 55) for row in rows[:8]],
-              )
-
-          legacy_ids = {item.external_id for item in legacy}
-          generic_ids = {item.external_id for item in generic.offers}
-          print(
-              "IDENTITY",
-              f"shared={len(legacy_ids & generic_ids)}",
-              f"missing={len(legacy_ids - generic_ids)}",
-              f"extra={len(generic_ids - legacy_ids)}",
-          )
-          print("EXTRA_SAMPLE", [compact(value, 90) for value in sorted(generic_ids - legacy_ids)[:12]])
-          print("MISSING_SAMPLE", [compact(value, 90) for value in sorted(legacy_ids - generic_ids)[:12]])
-          PY
+          set -euo pipefail
+          git config user.name "DP-ENGINE-019 remediation bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add arvectum_data/engine/html_records.py tests/dp_engine/test_semantic_html_records.py
+          git diff --cached --check
+          git commit -m "fix(engine): dedupe strong offer identities and control noise"
+          git push origin HEAD:feat/dp-engine-019
