@@ -1,4 +1,4 @@
-name: DP-ENGINE-019 isolate field regression
+name: DP-ENGINE-019 restore semantic test baseline
 
 on:
   push:
@@ -8,61 +8,47 @@ on:
       - .github/workflows/dp-engine-019-probe.yml
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  inspect:
+  restore:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 6
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-          cache: pip
-      - name: Install
+          ref: feat/dp-engine-019
+          fetch-depth: 0
+      - name: Restore exact prior suite and append one regression
+        shell: bash
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
-      - name: Baseline fixture records
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          from src.sources.generic_multi_record import GenericMultiRecordOfferDecoder, compare_offer_sets
-          from src.sources.adapters.promko import PromkoAdapter
-          from arvectum_data.engine import RecordStatus
+          set -euo pipefail
+          git show 9f244dfd509da70293a0c9606db2ae1094393ac3:tests/dp_engine/test_semantic_html_records.py > tests/dp_engine/test_semantic_html_records.py
+          cat >> tests/dp_engine/test_semantic_html_records.py <<'PYTEST'
 
-          html = Path('tests/fixtures/promko.html').read_text(encoding='utf-8')
-          def dump(label):
-              legacy = PromkoAdapter('https://promko.net/ru/').parse(html)
-              generic = GenericMultiRecordOfferDecoder().decode(html, page_url='https://promko.net/ru/', source_key='promko')
-              print(label, 'legacy', [(x.external_id, x.title, x.source_url, x.merchant, x.promo_code) for x in legacy])
-              print(label, 'offers', [(x.external_id, x.title, x.source_url, x.merchant, x.promo_code) for x in generic.offers])
-              for record in generic.records.records:
-                  attrs = dict(record.boundary.asset.attributes)
-                  vals = record.values() if record.status is RecordStatus.READY else {}
-                  print(label, 'record', record.status.value, attrs.get('record_anchor_kind'), attrs.get('record_heading'), attrs.get('record_href'), attrs.get('record_action_text'), vals.get('external_id'), vals.get('title'), vals.get('merchant'), vals.get('promo_code'))
-              print(label, compare_offer_sets(legacy, generic.offers))
-          dump('BASELINE')
-          PY
-      - name: Apply candidate patch
-        run: python .github/dp_engine_019_field_remediate.py
-      - name: Patched fixture records
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          from src.sources.generic_multi_record import GenericMultiRecordOfferDecoder, compare_offer_sets
-          from src.sources.adapters.promko import PromkoAdapter
-          from arvectum_data.engine import RecordStatus
 
-          html = Path('tests/fixtures/promko.html').read_text(encoding='utf-8')
-          legacy = PromkoAdapter('https://promko.net/ru/').parse(html)
-          generic = GenericMultiRecordOfferDecoder().decode(html, page_url='https://promko.net/ru/', source_key='promko')
-          print('PATCHED legacy', [(x.external_id, x.title, x.source_url, x.merchant, x.promo_code) for x in legacy])
-          print('PATCHED offers', [(x.external_id, x.title, x.source_url, x.merchant, x.promo_code) for x in generic.offers])
-          for record in generic.records.records:
-              attrs = dict(record.boundary.asset.attributes)
-              vals = record.values() if record.status is RecordStatus.READY else {}
-              print('PATCHED record', record.status.value, attrs.get('record_anchor_kind'), attrs.get('record_heading'), attrs.get('record_href'), attrs.get('record_action_text'), vals.get('external_id'), vals.get('title'), vals.get('merchant'), vals.get('promo_code'))
-          print('PATCHED', compare_offer_sets(legacy, generic.offers))
-          PY
+          def test_collection_heading_over_multiple_offer_links_is_not_a_record() -> None:
+              result = _records(
+                  """
+                  <section>
+                    <h2>Сейчас активны скидки</h2>
+                    <a href='/a'>Alpha до 70%</a>
+                    <a href='/b'>Beta до 25%</a>
+                    <a href='/c'>Gamma до 10%</a>
+                  </section>
+                  """
+              )
+              assert len(result.records) == 3
+              assert [record.asset.attributes["record_href"] for record in result.records] == ["/a", "/b", "/c"]
+          PYTEST
+          git diff --check
+          git diff --numstat 9f244dfd509da70293a0c9606db2ae1094393ac3 -- tests/dp_engine/test_semantic_html_records.py
+      - name: Commit restored test suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "DP-ENGINE-019 remediation bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add tests/dp_engine/test_semantic_html_records.py
+          git commit -m "test(engine): reject collection headings as offer records"
+          git push origin HEAD:feat/dp-engine-019
