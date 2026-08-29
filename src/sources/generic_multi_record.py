@@ -292,14 +292,14 @@ class DiscountOfferCandidateProvider:
             return None
         if strong and _CODE_TOKEN_RE.fullmatch(strong) and strong.upper() not in _STOP_CODES:
             return strong
-        match = _CODE_AFTER_LABEL_RE.search(text)
+        tail = text
+        if heading and text.casefold().startswith(heading.casefold()):
+            tail = text[len(heading):]
+        match = _CODE_AFTER_LABEL_RE.search(tail)
         if match:
             value = match.group(1)
             if value.upper() not in _STOP_CODES:
                 return value
-        tail = text
-        if heading and text.casefold().startswith(heading.casefold()):
-            tail = text[len(heading):]
         for match in _CODE_SCAN_RE.finditer(tail):
             value = match.group(1)
             if value.upper() not in _STOP_CODES:
