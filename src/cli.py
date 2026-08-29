@@ -12,6 +12,7 @@ from src.modules.source_registry.runner import collect_registered_sources
 from src.modules.source_registry.seed import seed_registry
 from src.modules.source_registry.xlsx import export_source_registry_xlsx, import_source_registry_xlsx
 from src.qa.doctor import build_doctor_report
+from src.qa.engine_acceptance import run_engine_acceptance, write_engine_acceptance_report
 from src.qa.report import write_smoke_report
 from src.runtime import run_all as run_runtime
 from src.shared.config import get_settings
@@ -58,6 +59,26 @@ def build_parser() -> argparse.ArgumentParser:
     discover.add_argument("--max-candidates", type=int, default=20)
 
     subparsers.add_parser("parity-report", help="Show DP Engine live source parity and retirement state")
+
+    engine_acceptance = subparsers.add_parser(
+        "engine-acceptance",
+        help="Run bounded live DP Engine acceptance and write privacy-safe evidence",
+    )
+    engine_acceptance.add_argument("--source", default=None, help="Evaluate only one configured source key")
+    engine_acceptance.add_argument("--config", default=None, help="Path to sources YAML")
+    engine_acceptance.add_argument(
+        "--runs",
+        type=int,
+        choices=(1, 2, 3),
+        default=1,
+        help="Production collection cycles to execute (max 3)",
+    )
+    engine_acceptance.add_argument(
+        "--output",
+        default="output/dp_engine_acceptance.json",
+        help="Destination JSON evidence path",
+    )
+
     subparsers.add_parser("maintenance", help="Expire and review stale offers")
     subparsers.add_parser("scheduler", help="Run collection, maintenance and autopost scheduler")
     subparsers.add_parser("bot", help="Run Telegram control bot")
@@ -113,6 +134,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "parity-report":
         print(json.dumps([asdict(row) for row in parity_report()], ensure_ascii=False, indent=2, default=str))
         return 0
+
+    if args.command == "engine-acceptance":
+        report = run_engine_acceptance(
+            path=args.config or settings.sources_config_path,
+            only=args.source,
+            runs=args.runs,
+        )
+        evidence_path = write_engine_acceptance_report(report, args.output)
+        payload = asdict(report)
+        payload["evidence_path"] = str(evidence_path)
+        print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+        return 1 if report.status == "FAIL" else 0
 
     if args.command == "maintenance":
         result = maintenance(stale_after_days=settings.stale_after_days)
