@@ -9,11 +9,22 @@ from .models import Evidence, FieldSpec, RawAsset
 from .records import RecordBoundary, RecordProviderResult, make_record_id
 
 _OFFER_SIGNAL_RE = re.compile(
-    r"(?:скид\w*|промокод\w*|к[еэ]шб\w*|бонус\w*|бесплат\w*|"
-    r"coupon\w*|promo\w*|discount\w*|cashback\w*|bonus\w*|sale\w*|"
+    r"(?:скид\w*|промокод\w*|к[еэ]шб\w*|бонус\w*|бесплат\w*|подар\w*|сертификат\w*|"
+    r"coupon\w*|promo\w*|discount\w*|cashback\w*|bonus\w*|sale\w*|gift\w*|"
     r"\bдо\s*\d{1,3}\s*%|[-−]\s*\d[\d\s]{0,8}\s*(?:₽|руб)|\d{1,3}\s*%)",
     re.IGNORECASE,
 )
+_ACTION_RE = re.compile(
+    r"(?:открыть|показать|активировать|получить|применить|использовать|скопировать|"
+    r"open|show|reveal|get|apply|use|copy)\s+(?:промокод\w*|код\b|акци\w*|coupon\w*|promo\w*|deal\w*)",
+    re.IGNORECASE,
+)
+_BENEFIT_HEADING_RE = re.compile(
+    r"(?:скид\w*|промокод\w*|дешевле|подар\w*|бонус\w*|к[еэ]шб\w*|бесплат\w*|"
+    r"discount\w*|coupon\w*|promo\w*|cashback\w*|bonus\w*|free\b|gift\w*)",
+    re.IGNORECASE,
+)
+_MACHINE_DATA_KEYS = {"data-coupon-id", "data-promocode", "data-promo-code"}
 _SEMANTIC_TOKENS = {
     "offer",
     "promo",
@@ -128,20 +139,6 @@ def _semantic_tokens(node: _Node) -> set[str]:
     return {token.casefold() for token in re.findall(r"[A-Za-z0-9_-]+", raw)}
 
 
-def _score(node: _Node, text: str) -> tuple[float, int] | None:
-    if len(text) < 6 or not _OFFER_SIGNAL_RE.search(text):
-        return None
-    if node.tag == "article":
-        return 0.96, 4
-    if node.tag == "li":
-        return 0.93, 3
-    if node.tag in {"div", "section"} and _semantic_tokens(node) & _SEMANTIC_TOKENS:
-        return 0.91, 3
-    if node.tag == "a" and node.attrs.get("href"):
-        return 0.88, 2
-    return None
-
-
 def _is_descendant(node: _Node, ancestor: _Node) -> bool:
     current = node.parent
     while current is not None:
@@ -166,6 +163,15 @@ def _first_link(node: _Node) -> tuple[str | None, str | None]:
     href = target.attrs.get("href") or None
     text = target.text() or None
     return href, text
+
+
+def _parent_link(node: _Node) -> tuple[str | None, str | None]:
+    current: _Node | None = node
+    while current is not None and current.tag != "document":
+        if current.tag == "a" and current.attrs.get("href"):
+            return current.attrs.get("href") or None, current.text() or None
+        current = current.parent
+    return None, None
 
 
 def _first_image(node: _Node) -> tuple[str | None, str | None]:
@@ -194,13 +200,84 @@ def _data_attributes(node: _Node, *, limit: int = 24) -> dict[str, str]:
     return result
 
 
-class SemanticHTMLRecordProvider:
-    """Propose record-sized HTML slices from generic structure and offer semantics.
+def _has_machine_marker(node: _Node) -> bool:
+    return any(node.attrs.get(key) for key in _MACHINE_DATA_KEYS)
 
-    The provider has no host names, selectors, XPath expressions, or site profiles.
-    It recognizes bounded semantic containers (article/li/semantic card-like divs)
-    and offer-like links, preferring the enclosing record container over nested
-    actions. Field interpretation remains the responsibility of candidate providers.
+
+def _is_action_node(node: _Node) -> bool:
+    if node.tag not in {"a", "button"}:
+        return False
+    href = node.attrs.get("href", "")
+    if "offer_id=" in href:
+        return True
+    return bool(_ACTION_RE.search(node.text()))
+
+
+def _is_benefit_heading(node: _Node) -> bool:
+    return node.tag in {"h2", "h3", "h4"} and bool(_BENEFIT_HEADING_RE.search(node.text()))
+
+
+def _count_descendants(node: _Node, predicate) -> int:
+    return sum(1 for current in node.walk() if predicate(current))
+
+
+def _bounded_card(anchor: _Node, *, anchor_kind: str, max_chars: int = 2200) -> _Node:
+    """Resolve one strong offer anchor to a bounded record container.
+
+    We never cross an ancestor that contains multiple anchors of the same strong
+    kind. This prevents a page/list wrapper from becoming one record and keeps
+    navigation/promotional index noise out of the record set.
+    """
+
+    predicate = _is_benefit_heading if anchor_kind == "heading" else (
+        lambda node: _has_machine_marker(node) or _is_action_node(node)
+    )
+    fallback = anchor
+    current = anchor.parent
+    while current is not None and current.tag not in {"document", "html", "body"}:
+        text = current.text()
+        if not text or len(text) > max_chars:
+            current = current.parent
+            continue
+        if _count_descendants(current, predicate) > 1:
+            break
+        fallback = current
+        if current.tag in {"article", "li"}:
+            return current
+        current = current.parent
+    return fallback
+
+
+def _fallback_score(node: _Node, text: str) -> tuple[float, int] | None:
+    if len(text) < 6 or not _OFFER_SIGNAL_RE.search(text):
+        return None
+    if node.tag == "article":
+        return 0.92, 4
+    if node.tag == "li":
+        return 0.89, 3
+    if node.tag in {"div", "section"} and _semantic_tokens(node) & _SEMANTIC_TOKENS:
+        return 0.87, 3
+    if node.tag == "a" and node.attrs.get("href"):
+        return 0.84, 2
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class _AnchoredRecord:
+    confidence: float
+    card: _Node
+    anchor: _Node
+    anchor_kind: str
+
+
+class SemanticHTMLRecordProvider:
+    """Propose record-sized HTML slices without host-specific selectors.
+
+    Strong structural anchors are preferred in this order: machine-readable
+    coupon/promo attributes, explicit offer actions, then benefit headings.
+    Broad semantic containers are only a last-resort fallback. This keeps
+    navigation lists and wrappers containing several offers from being emitted
+    as business records while preserving automatic discovery on unknown sites.
     """
 
     name = "semantic_html_records"
@@ -227,47 +304,43 @@ class SemanticHTMLRecordProvider:
         asset: RawAsset,
         fields: Sequence[FieldSpec],
     ) -> RecordProviderResult:
-        del fields  # Structural segmentation is deliberately field-agnostic.
+        del fields
         if not asset.html:
             return RecordProviderResult()
 
         parser = _TreeParser()
         parser.feed(asset.html)
         parser.close()
+        nodes = tuple(node for node in parser.root.walk() if node is not parser.root)
 
-        proposed: list[tuple[int, float, _Node, str]] = []
-        for node in parser.root.walk():
-            if node is parser.root:
-                continue
-            text = node.text()
-            scored = _score(node, text)
-            if scored is None:
-                continue
-            confidence, priority = scored
-            if confidence < self.min_confidence:
-                continue
-            proposed.append((priority, confidence, node, text))
+        anchored = self._strong_records(nodes)
+        if not anchored:
+            anchored = self._heading_records(nodes)
+        if not anchored:
+            anchored = self._fallback_records(nodes)
 
-        # Prefer a meaningful enclosing card over its nested action link. Equal
-        # priorities stay document-ordered through their structural paths.
-        proposed.sort(key=lambda item: (-item[0], item[2].path))
-        selected: list[tuple[float, _Node, str]] = []
-        for _priority, confidence, node, text in proposed:
-            if any(_is_descendant(node, chosen) for _, chosen, _ in selected):
-                continue
-            selected.append((confidence, node, text))
-
-        selected.sort(key=lambda item: item[1].path)
+        anchored.sort(key=lambda item: item.card.path)
         warnings: list[str] = []
-        if len(selected) > self.max_records:
+        if len(anchored) > self.max_records:
             warnings.append(f"max_records:{self.max_records}")
-            selected = selected[: self.max_records]
+            anchored = anchored[: self.max_records]
 
         boundaries: list[RecordBoundary] = []
-        for ordinal, (confidence, node, text) in enumerate(selected):
+        for ordinal, proposed in enumerate(anchored):
+            confidence, node, anchor, anchor_kind = (
+                proposed.confidence,
+                proposed.card,
+                proposed.anchor,
+                proposed.anchor_kind,
+            )
+            text = node.text()
             source_ref = node.path
             record_id = make_record_id(asset.asset_id, self.name, source_ref)
             href, link_text = _first_link(node)
+            action_href = anchor.attrs.get("href") or None if anchor.tag in {"a", "button"} else None
+            action_text = anchor.text() or None
+            if anchor_kind == "heading" and not action_href:
+                action_href, _ = _parent_link(anchor)
             image_src, image_alt = _first_image(node)
             attributes: Mapping[str, object] = {
                 "record_text": text[: self.max_text_chars],
@@ -277,6 +350,9 @@ class SemanticHTMLRecordProvider:
                 "record_strong": _first_text(node, {"strong", "b"}),
                 "record_href": href,
                 "record_link_text": link_text,
+                "record_action_href": action_href,
+                "record_action_text": action_text,
+                "record_anchor_kind": anchor_kind,
                 "record_image_src": image_src,
                 "record_image_alt": image_alt,
                 "record_data": _data_attributes(node),
@@ -306,10 +382,55 @@ class SemanticHTMLRecordProvider:
                             kind="semantic_html_record_boundary",
                             source_ref=source_ref,
                             excerpt=text[:500],
-                            metadata={"tag": node.tag},
+                            metadata={"tag": node.tag, "anchor_kind": anchor_kind},
                         ),
                     ),
-                    metadata={"tag": node.tag},
+                    metadata={"tag": node.tag, "anchor_kind": anchor_kind},
                 )
             )
         return RecordProviderResult(records=tuple(boundaries), warnings=tuple(warnings))
+
+    def _strong_records(self, nodes: Sequence[_Node]) -> list[_AnchoredRecord]:
+        machine = [node for node in nodes if _has_machine_marker(node)]
+        anchors = machine or [node for node in nodes if _is_action_node(node)]
+        kind = "machine" if machine else "action"
+        confidence = 0.99 if machine else 0.97
+        return self._dedupe_cards(anchors, kind=kind, confidence=confidence)
+
+    def _heading_records(self, nodes: Sequence[_Node]) -> list[_AnchoredRecord]:
+        anchors = [node for node in nodes if _is_benefit_heading(node)]
+        return self._dedupe_cards(anchors, kind="heading", confidence=0.94)
+
+    def _fallback_records(self, nodes: Sequence[_Node]) -> list[_AnchoredRecord]:
+        proposed: list[tuple[int, float, _Node]] = []
+        for node in nodes:
+            scored = _fallback_score(node, node.text())
+            if scored is None:
+                continue
+            confidence, priority = scored
+            if confidence >= self.min_confidence:
+                proposed.append((priority, confidence, node))
+        proposed.sort(key=lambda item: (-item[0], item[2].path))
+        selected: list[_AnchoredRecord] = []
+        for _priority, confidence, node in proposed:
+            if any(_is_descendant(node, chosen.card) for chosen in selected):
+                continue
+            selected.append(_AnchoredRecord(confidence, node, node, "fallback"))
+        return selected
+
+    @staticmethod
+    def _dedupe_cards(
+        anchors: Sequence[_Node],
+        *,
+        kind: str,
+        confidence: float,
+    ) -> list[_AnchoredRecord]:
+        result: list[_AnchoredRecord] = []
+        seen: set[str] = set()
+        for anchor in anchors:
+            card = _bounded_card(anchor, anchor_kind=kind)
+            if card.path in seen:
+                continue
+            seen.add(card.path)
+            result.append(_AnchoredRecord(confidence, card, anchor, kind))
+        return result
