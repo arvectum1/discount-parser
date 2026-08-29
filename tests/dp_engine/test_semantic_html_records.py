@@ -195,3 +195,34 @@ def test_action_card_can_expand_across_nested_machine_marker() -> None:
     assert attrs["record_heading"] == "Скидка 30% в магазине"
     assert attrs["record_action_href"] == "/go"
     assert attrs["record_data"]["data-coupon-id"] == "77"
+
+
+
+def test_mixed_page_keeps_linked_heading_and_unrelated_action_record() -> None:
+    result = _records(
+        """
+        <main>
+          <a href='/heading'><h3>Промокод Alpha на август</h3><span>SAVE10</span></a>
+          <article><h3>Скидка 20% в Beta</h3><a href='/action'>Открыть промокод</a></article>
+        </main>
+        """
+    )
+    assert len(result.records) == 2
+    kinds = {record.asset.attributes["record_anchor_kind"] for record in result.records}
+    assert kinds == {"heading", "action"}
+    assert {record.asset.attributes["record_href"] for record in result.records} == {"/heading", "/action"}
+
+
+def test_offer_word_link_is_action_signal_without_imperative_verb() -> None:
+    result = _records(
+        """
+        <article>
+          <strong>Demo Shop</strong>
+          <a href='/deal'>Скидка 25% и промокод</a>
+        </article>
+        """
+    )
+    assert len(result.records) == 1
+    attrs = result.records[0].asset.attributes
+    assert attrs["record_anchor_kind"] == "action"
+    assert attrs["record_action_href"] == "/deal"

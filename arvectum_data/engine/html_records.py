@@ -210,7 +210,29 @@ def _is_action_node(node: _Node) -> bool:
     href = node.attrs.get("href", "")
     if "offer_id=" in href:
         return True
-    return bool(_ACTION_RE.search(node.text()))
+    text = node.text()
+    if _ACTION_RE.search(text):
+        return True
+    # Some production sites label the actionable element with the benefit itself
+    # rather than an imperative verb. Keep this generic and bounded: only links
+    # with an href and buttons qualify, and very long/navigation-like text is out.
+    return bool(
+        text
+        and len(text) <= 280
+        and _OFFER_SIGNAL_RE.search(text)
+        and (node.tag == "button" or bool(href))
+    )
+
+
+def _is_offer_id_action(node: _Node) -> bool:
+    return node.tag == "a" and "offer_id=" in node.attrs.get("href", "")
+
+
+def _is_linked_benefit_heading(node: _Node) -> bool:
+    if not _is_benefit_heading(node):
+        return False
+    href, _ = _parent_link(node)
+    return bool(href)
 
 
 def _is_benefit_heading(node: _Node) -> bool:
@@ -316,9 +338,7 @@ class SemanticHTMLRecordProvider:
         parser.close()
         nodes = tuple(node for node in parser.root.walk() if node is not parser.root)
 
-        anchored = self._strong_records(nodes)
-        if not anchored:
-            anchored = self._heading_records(nodes)
+        anchored = self._mixed_records(nodes)
         if not anchored:
             anchored = self._fallback_records(nodes)
 
@@ -393,26 +413,44 @@ class SemanticHTMLRecordProvider:
             )
         return RecordProviderResult(records=tuple(boundaries), warnings=tuple(warnings))
 
-    def _strong_records(self, nodes: Sequence[_Node]) -> list[_AnchoredRecord]:
-        actions = [node for node in nodes if _is_action_node(node)]
-        machine = [node for node in nodes if _has_machine_marker(node)]
-        action_records = self._dedupe_cards(actions, kind="action", confidence=0.97)
-        machine_records = self._dedupe_cards(machine, kind="machine", confidence=0.99)
-        result = list(action_records)
-        for proposed in machine_records:
-            if any(
-                proposed.card is existing.card
-                or _is_descendant(proposed.card, existing.card)
-                or _is_descendant(existing.card, proposed.card)
-                for existing in action_records
-            ):
-                continue
-            result.append(proposed)
-        return result
+    def _mixed_records(self, nodes: Sequence[_Node]) -> list[_AnchoredRecord]:
+        """Collect independent record signals per card instead of per page.
 
-    def _heading_records(self, nodes: Sequence[_Node]) -> list[_AnchoredRecord]:
-        anchors = [node for node in nodes if _is_benefit_heading(node)]
-        return self._dedupe_cards(anchors, kind="heading", confidence=0.94)
+        Real pages may mix machine coupon ids, offer-id links, explicit actions
+        and linked benefit headings. A page-wide winner discards valid records.
+        Here every generic signal proposes a bounded card; proposals resolving to
+        the exact same structural card are arbitrated by evidence strength while
+        distinct cards survive for the strict parity gate to validate.
+        """
+
+        groups: tuple[tuple[int, str, float, Sequence[_Node]], ...] = (
+            (5, "machine", 0.99, [node for node in nodes if _has_machine_marker(node)]),
+            (5, "action", 0.99, [node for node in nodes if _is_offer_id_action(node)]),
+            (4, "heading", 0.97, [node for node in nodes if _is_linked_benefit_heading(node)]),
+            (3, "action", 0.96, [
+                node for node in nodes if _is_action_node(node) and not _is_offer_id_action(node)
+            ]),
+            (2, "heading", 0.94, [
+                node for node in nodes if _is_benefit_heading(node) and not _is_linked_benefit_heading(node)
+            ]),
+        )
+        proposed: list[tuple[int, _AnchoredRecord]] = []
+        for priority, kind, confidence, anchors in groups:
+            proposed.extend(
+                (priority, record)
+                for record in self._dedupe_cards(anchors, kind=kind, confidence=confidence)
+            )
+
+        # Exact structural-card arbitration only. Ancestor/descendant proposals are
+        # deliberately left visible: collapsing them without proof can hide a real
+        # sibling offer. Duplicate business identities are still deduplicated later,
+        # and DP-016 exact parity remains the final adoption authority.
+        by_path: dict[str, tuple[int, _AnchoredRecord]] = {}
+        for priority, record in proposed:
+            previous = by_path.get(record.card.path)
+            if previous is None or priority > previous[0]:
+                by_path[record.card.path] = (priority, record)
+        return [item[1] for item in by_path.values()]
 
     def _fallback_records(self, nodes: Sequence[_Node]) -> list[_AnchoredRecord]:
         proposed: list[tuple[int, float, _Node]] = []
