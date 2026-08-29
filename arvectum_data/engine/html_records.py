@@ -229,9 +229,12 @@ def _bounded_card(anchor: _Node, *, anchor_kind: str, max_chars: int = 2200) -> 
     navigation/promotional index noise out of the record set.
     """
 
-    predicate = _is_benefit_heading if anchor_kind == "heading" else (
-        lambda node: _has_machine_marker(node) or _is_action_node(node)
-    )
+    if anchor_kind == "heading":
+        predicate = _is_benefit_heading
+    elif anchor_kind == "machine":
+        predicate = _has_machine_marker
+    else:
+        predicate = _is_action_node
     fallback = anchor
     current = anchor.parent
     while current is not None and current.tag not in {"document", "html", "body"}:
@@ -391,11 +394,21 @@ class SemanticHTMLRecordProvider:
         return RecordProviderResult(records=tuple(boundaries), warnings=tuple(warnings))
 
     def _strong_records(self, nodes: Sequence[_Node]) -> list[_AnchoredRecord]:
+        actions = [node for node in nodes if _is_action_node(node)]
         machine = [node for node in nodes if _has_machine_marker(node)]
-        anchors = machine or [node for node in nodes if _is_action_node(node)]
-        kind = "machine" if machine else "action"
-        confidence = 0.99 if machine else 0.97
-        return self._dedupe_cards(anchors, kind=kind, confidence=confidence)
+        action_records = self._dedupe_cards(actions, kind="action", confidence=0.97)
+        machine_records = self._dedupe_cards(machine, kind="machine", confidence=0.99)
+        result = list(action_records)
+        for proposed in machine_records:
+            if any(
+                proposed.card is existing.card
+                or _is_descendant(proposed.card, existing.card)
+                or _is_descendant(existing.card, proposed.card)
+                for existing in action_records
+            ):
+                continue
+            result.append(proposed)
+        return result
 
     def _heading_records(self, nodes: Sequence[_Node]) -> list[_AnchoredRecord]:
         anchors = [node for node in nodes if _is_benefit_heading(node)]

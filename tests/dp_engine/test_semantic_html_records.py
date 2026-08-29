@@ -72,7 +72,7 @@ def test_data_attributes_and_image_metadata_are_exposed_generically() -> None:
     assert attrs["record_image_alt"] == "Shop"
     assert attrs["record_data"]["data-coupon-id"] == "42"
     assert attrs["record_data"]["data-promocode"] == "SAVE15"
-    assert attrs["record_anchor_kind"] == "machine"
+    assert attrs["record_anchor_kind"] == "action"
 
 
 def test_max_records_is_bounded_and_reported() -> None:
@@ -146,3 +146,52 @@ def test_benefit_headings_are_fallback_anchors_when_actions_absent() -> None:
     assert len(result.records) == 2
     assert [record.asset.attributes["record_action_href"] for record in result.records] == ["/one", "/two"]
     assert all(record.asset.attributes["record_anchor_kind"] == "heading" for record in result.records)
+
+
+
+def test_action_and_machine_evidence_on_one_card_are_not_duplicated() -> None:
+    result = _records(
+        """
+        <article>
+          <h3>Скидка 15%</h3>
+          <button data-coupon-id='42' data-promocode='SAVE15'>Получить промокод</button>
+        </article>
+        """
+    )
+    assert len(result.records) == 1
+    attrs = result.records[0].asset.attributes
+    assert attrs["record_anchor_kind"] == "action"
+    assert attrs["record_data"]["data-coupon-id"] == "42"
+    assert attrs["record_heading"] == "Скидка 15%"
+
+
+def test_machine_backed_and_action_only_offers_are_both_retained() -> None:
+    result = _records(
+        """
+        <main>
+          <article><h3>Скидка 10%</h3><button data-coupon-id='11'>Получить промокод</button></article>
+          <article><h3>Скидка 20%</h3><a href='/two'>Открыть промокод</a></article>
+        </main>
+        """
+    )
+    assert len(result.records) == 2
+    assert [record.asset.attributes["record_heading"] for record in result.records] == [
+        "Скидка 10%",
+        "Скидка 20%",
+    ]
+
+
+def test_action_card_can_expand_across_nested_machine_marker() -> None:
+    result = _records(
+        """
+        <div class='entry'>
+          <h3>Скидка 30% в магазине</h3>
+          <div><span data-coupon-id='77'></span><a href='/go'>Получить промокод</a></div>
+        </div>
+        """
+    )
+    assert len(result.records) == 1
+    attrs = result.records[0].asset.attributes
+    assert attrs["record_heading"] == "Скидка 30% в магазине"
+    assert attrs["record_action_href"] == "/go"
+    assert attrs["record_data"]["data-coupon-id"] == "77"
