@@ -16,6 +16,7 @@ from src.qa.report import write_smoke_report
 from src.runtime import run_all as run_runtime
 from src.shared.config import get_settings
 from src.shared.db import session_scope
+from src.sources.parity_telemetry import parity_report
 from src.sources.runner import run_all
 from src.telegram.runner import run_bot
 from src.web.launcher import run_web_panel
@@ -56,6 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
     discover.add_argument("--url", required=True)
     discover.add_argument("--max-candidates", type=int, default=20)
 
+    subparsers.add_parser("parity-report", help="Show DP Engine live source parity and retirement state")
     subparsers.add_parser("maintenance", help="Expire and review stale offers")
     subparsers.add_parser("scheduler", help="Run collection, maintenance and autopost scheduler")
     subparsers.add_parser("bot", help="Run Telegram control bot")
@@ -107,6 +109,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2, default=str))
         return 1 if result.error else 0
+
+    if args.command == "parity-report":
+        print(json.dumps([asdict(row) for row in parity_report()], ensure_ascii=False, indent=2, default=str))
+        return 0
 
     if args.command == "maintenance":
         result = maintenance(stale_after_days=settings.stale_after_days)
