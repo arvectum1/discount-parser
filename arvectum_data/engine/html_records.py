@@ -25,6 +25,16 @@ _BENEFIT_HEADING_RE = re.compile(
     re.IGNORECASE,
 )
 _MACHINE_DATA_KEYS = {"data-coupon-id", "data-promocode", "data-promo-code"}
+_CONTROL_ACTION_RE = re.compile(
+    r"(?:добавить|предложить|разместить|submit|add|share)\s+(?:свой\s+)?"
+    r"(?:промокод\w*|купон\w*|скидк\w*|offer\w*|promo\w*|coupon\w*|deal\w*)",
+    re.IGNORECASE,
+)
+_CONTACT_TEXT_RE = re.compile(
+    r"(?:@[A-Za-z0-9_.-]+|[A-Za-z0-9_.+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|"
+    r"[A-Za-z0-9.-]+\.[A-Za-z]{2,})$",
+    re.IGNORECASE,
+)
 _SEMANTIC_TOKENS = {
     "offer",
     "promo",
@@ -220,22 +230,34 @@ def _is_action_node(node: _Node) -> bool:
     if "offer_id=" in href:
         return True
     text = node.text()
+    if _is_navigation_node(node) or _CONTROL_ACTION_RE.search(text):
+        return False
+    if node.tag == "a" and href.casefold().startswith(("javascript:", "mailto:", "tel:")):
+        return False
+    if _CONTACT_TEXT_RE.fullmatch(text):
+        return False
     if _ACTION_RE.search(text):
-        return not _is_navigation_node(node)
+        return True
     # Some production sites label the actionable element with the benefit itself
     # rather than an imperative verb. Keep this generic and bounded, and do not
     # promote global navigation/chrome into business records.
     return bool(
         text
         and len(text) <= 280
-        and not _is_navigation_node(node)
         and _OFFER_SIGNAL_RE.search(text)
         and (node.tag == "button" or bool(href))
     )
 
 
+def _offer_id_value(node: _Node) -> str | None:
+    if node.tag != "a":
+        return None
+    match = re.search(r"(?:[?&])offer_id=([^&#]+)", node.attrs.get("href", ""), re.IGNORECASE)
+    return match.group(1) if match else None
+
+
 def _is_offer_id_action(node: _Node) -> bool:
-    return node.tag == "a" and "offer_id=" in node.attrs.get("href", "")
+    return _offer_id_value(node) is not None
 
 
 def _is_linked_benefit_heading(node: _Node) -> bool:
@@ -246,41 +268,75 @@ def _is_linked_benefit_heading(node: _Node) -> bool:
 
 
 def _is_benefit_heading(node: _Node) -> bool:
-    return node.tag in {"h2", "h3", "h4"} and bool(_BENEFIT_HEADING_RE.search(node.text()))
+    return (
+        node.tag in {"h2", "h3", "h4"}
+        and not _is_navigation_node(node)
+        and not _CONTROL_ACTION_RE.search(node.text())
+        and bool(_BENEFIT_HEADING_RE.search(node.text()))
+    )
+
+
+def _first_benefit_heading_text(node: _Node) -> str | None:
+    for current in node.walk():
+        if _is_benefit_heading(current):
+            value = current.text()
+            if value:
+                return value
+    return None
 
 
 def _count_descendants(node: _Node, predicate) -> int:
     return sum(1 for current in node.walk() if predicate(current))
 
 
+def _unique_coupon_identity_count(node: _Node) -> int:
+    values = {
+        _compact(current.attrs.get("data-coupon-id", ""))
+        for current in node.walk()
+        if current.attrs.get("data-coupon-id")
+    }
+    if values:
+        return len(values)
+    return _count_descendants(node, _has_machine_marker)
+
+
+def _unique_offer_id_count(node: _Node) -> int:
+    return len({value for current in node.walk() if (value := _offer_id_value(current))})
+
+
 def _is_explicit_action_node(node: _Node) -> bool:
-    if node.tag not in {"a", "button"}:
+    if node.tag not in {"a", "button"} or _is_offer_id_action(node):
         return False
-    href = node.attrs.get("href", "")
-    if "offer_id=" in href:
-        return True
-    return bool(_ACTION_RE.search(node.text())) and not _is_navigation_node(node)
+    return (
+        bool(_ACTION_RE.search(node.text()))
+        and not _is_navigation_node(node)
+        and not _CONTROL_ACTION_RE.search(node.text())
+    )
 
 
 def _is_benefit_action_node(node: _Node) -> bool:
-    return _is_action_node(node) and not _is_explicit_action_node(node)
+    return (
+        _is_action_node(node)
+        and not _is_offer_id_action(node)
+        and not _is_explicit_action_node(node)
+    )
 
 
 def _contains_multiple_offer_units(node: _Node) -> bool:
     """Return True when one container visibly spans more than one offer unit.
 
-    A single offer commonly exposes several *different* signals at once (for
-    example one heading + one reveal action + one machine coupon id), so summing
-    all anchors would split valid cards. Explicit actions and benefit-labelled
-    links are counted separately: one of each can belong to the same card, while
-    repetition within either category marks a list/wrapper.
+    Repeated DOM representations of the same strong identity are one offer: a
+    card may copy ``data-coupon-id`` onto both its wrapper and reveal button, or
+    repeat the same ``offer_id`` in nested links. Distinct identity values still
+    stop boundary growth. We keep weaker action/heading signals conservative and
+    count their DOM occurrences because they are not guaranteed unique.
     """
 
     return any(
         count > 1
         for count in (
-            _count_descendants(node, _has_machine_marker),
-            _count_descendants(node, _is_offer_id_action),
+            _unique_coupon_identity_count(node),
+            _unique_offer_id_count(node),
             _count_descendants(node, _is_explicit_action_node),
             _count_descendants(node, _is_benefit_action_node),
             _count_descendants(node, _is_benefit_heading),
@@ -409,7 +465,7 @@ class SemanticHTMLRecordProvider:
                 "record_text": text[: self.max_text_chars],
                 "record_tag": node.tag,
                 "record_attrs": dict(node.attrs),
-                "record_heading": _first_text(node, {"h1", "h2", "h3", "h4"}),
+                "record_heading": _first_benefit_heading_text(node) or _first_text(node, {"h1", "h2", "h3", "h4"}),
                 "record_strong": _first_text(node, {"strong", "b"}),
                 "record_href": href,
                 "record_link_text": link_text,
@@ -464,18 +520,19 @@ class SemanticHTMLRecordProvider:
         """
 
         groups: tuple[tuple[int, str, float, Sequence[_Node]], ...] = (
-            # Exact-card arbitration: offer-id is strongest; a linked benefit
-            # heading carries the canonical target link; an explicit action keeps
-            # its href while still exposing machine data from the card.
-            (9, "action", 0.99, [node for node in nodes if _is_offer_id_action(node)]),
-            (8, "heading", 0.97, [node for node in nodes if _is_linked_benefit_heading(node)]),
-            (7, "action", 0.96, [
+            # Exact-card arbitration keeps reveal/action semantics when present,
+            # while a semantic heading outranks a machine-only representation.
+            # Linked headings remain above ordinary actions because their link is
+            # itself the semantic business target rather than a reveal control.
+            (10, "action", 0.99, [node for node in nodes if _is_offer_id_action(node)]),
+            (9, "heading", 0.97, [node for node in nodes if _is_linked_benefit_heading(node)]),
+            (8, "action", 0.96, [
                 node for node in nodes if _is_action_node(node) and not _is_offer_id_action(node)
             ]),
-            (6, "machine", 0.99, [node for node in nodes if _has_machine_marker(node)]),
-            (5, "heading", 0.94, [
+            (7, "heading", 0.95, [
                 node for node in nodes if _is_benefit_heading(node) and not _is_linked_benefit_heading(node)
             ]),
+            (6, "machine", 0.99, [node for node in nodes if _has_machine_marker(node)]),
         )
         proposed: list[tuple[int, _AnchoredRecord]] = []
         for priority, kind, confidence, anchors in groups:
