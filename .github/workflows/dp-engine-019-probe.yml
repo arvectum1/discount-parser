@@ -1,4 +1,4 @@
-name: DP-ENGINE-019 apply identity-aware pruning
+name: DP-ENGINE-019 apply identity-aware pruning v2
 
 on:
   push:
