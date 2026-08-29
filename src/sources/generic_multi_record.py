@@ -23,14 +23,17 @@ from src.sources.adapters.common import external_id, parse_amount, parse_percent
 from src.sources.base import RawOffer
 
 _ACTION_SUFFIX_RE = re.compile(
-    r"\s+(?:активировать|получить|применить|использовать)\s+промокод.*$",
+    r"\s+(?:открыть|показать|активировать|получить|применить|использовать|скопировать)\s+"
+    r"(?:промокод\w*|код\b|акци\w*).*$",
     re.IGNORECASE,
 )
 _ACTION_ACTIVATE_RE = re.compile(
     r"(?:активировать|получить|применить|использовать)\s+промокод",
     re.IGNORECASE,
 )
-_ACTION_OPEN_RE = re.compile(r"(?:открыть|показать)\s+(?:промокод|акци\w*)", re.IGNORECASE)
+_ACTION_OPEN_RE = re.compile(r"(?:открыть|open)\s+(?:промокод|акци\w*|coupon|promo|deal)", re.IGNORECASE)
+_ACTION_SHOW_RE = re.compile(r"(?:показать|show|reveal)\s+(?:промокод|акци\w*|coupon|promo|deal)", re.IGNORECASE)
+_REVEAL_ACTION_RE = re.compile(r"(?:открыть|показать|open|show|reveal)\s+(?:промокод|акци\w*|coupon|promo|deal)", re.IGNORECASE)
 _BENEFIT_RE = re.compile(
     r"\b(?:доп\.?\s*)?(?:скидк\w*|промокод\w*|бонус\w*|к[еэ]шб\w*|бесплат\w*|подар\w*|сертификат\w*)\b",
     re.IGNORECASE,
@@ -42,7 +45,15 @@ _CODE_AFTER_LABEL_RE = re.compile(
     re.IGNORECASE,
 )
 _CODE_TOKEN_RE = re.compile(r"^[A-ZА-ЯЁ0-9_-]{4,24}$")
+_CODE_SCAN_RE = re.compile(
+    r"\b(?=[A-ZА-ЯЁ0-9_-]{4,24}\b)(?=[A-ZА-ЯЁ0-9_-]*\d|[A-ZА-ЯЁ0-9_-]{5,})([A-ZА-ЯЁ0-9_-]+)\b"
+)
 _STOP_CODES = {"IMAGE", "КОД", "ПРОМОКОД", "ПРОМОКОДЫ", "COUPON", "PROMO"}
+_STATUS_STRONG_RE = re.compile(
+    r"^(?:\d+\s+)?(?:остал(?:ось|ись)|дн(?:ей|я)?|час(?:ов|а)?|минут|valid|expires?)\b",
+    re.IGNORECASE,
+)
+_MERCHANT_AFTER_FROM_RE = re.compile(r"\bот\s+([A-Za-zА-Яа-яЁё0-9 ._-]{2,80})", re.IGNORECASE)
 
 OFFER_FIELDS: tuple[FieldSpec, ...] = (
     FieldSpec("external_id", required=True, min_confidence=0.90),
@@ -76,6 +87,20 @@ _PARITY_FIELDS = (
 
 def _compact(value: str | None) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _is_inferred_code(value: str | None) -> bool:
+    token = _compact(value)
+    if not token:
+        return False
+    upper = token.upper()
+    if upper in _STOP_CODES or not _CODE_TOKEN_RE.fullmatch(upper):
+        return False
+    # Inferred values are deliberately stricter than explicit data-* values.
+    # Natural-language words after labels such as ``Промокод получите`` must
+    # never become business values. Mixed-case tokens are accepted only when
+    # they contain a digit; otherwise require an all-uppercase code shape.
+    return token == upper or any(char.isdigit() for char in token)
 
 
 def _candidate(field_key: str, value: Any, *, source_ref: str, confidence: float = 0.98) -> Candidate:
@@ -113,7 +138,16 @@ class DiscountOfferCandidateProvider:
 
         heading = _compact(attrs.get("record_heading")) or None
         strong = _compact(attrs.get("record_strong")) or None
-        href = _compact(attrs.get("record_href")) or None
+        record_href = _compact(attrs.get("record_href")) or None
+        action_href = _compact(attrs.get("record_action_href")) or None
+        action_text = _compact(attrs.get("record_action_text")) or None
+        anchor_kind = _compact(attrs.get("record_anchor_kind")).casefold()
+        if anchor_kind == "action":
+            href = action_href
+        elif anchor_kind == "heading":
+            href = action_href or record_href
+        else:
+            href = record_href
         image_src = _compact(attrs.get("record_image_src")) or None
         image_alt = _compact(attrs.get("record_image_alt")) or None
         record_tag = _compact(attrs.get("record_tag")).casefold()
@@ -123,10 +157,29 @@ class DiscountOfferCandidateProvider:
         base_url = asset.source_url or ""
 
         summary = _SUMMARY_RE.fullmatch(text)
-        merchant = self._merchant(text, heading, strong, image_alt, summary)
+        prefer_image_merchant = bool(
+            (action_href and "offer_id=" in action_href)
+            or (action_text and _ACTION_SHOW_RE.search(action_text))
+        )
+        merchant = self._merchant(
+            text,
+            heading,
+            strong,
+            image_alt,
+            summary,
+            action_text=action_text,
+            prefer_image=prefer_image_merchant,
+            anchor_kind=anchor_kind,
+        )
         title = self._title(text, heading, merchant, summary)
         source_url = urljoin(base_url, href) if href else base_url
-        promo_code = self._promo_code(text, strong, data)
+        promo_code = self._promo_code(
+            text,
+            heading,
+            strong,
+            data,
+            suppress_inference=bool(action_text and _REVEAL_ACTION_RE.search(action_text)),
+        )
 
         percent = parse_percent(title) or parse_percent(text)
         cashback_percent: Decimal | None = None
@@ -145,6 +198,8 @@ class DiscountOfferCandidateProvider:
             promo_code=promo_code,
             percent=percent,
             record_tag=record_tag,
+            anchor_kind=anchor_kind,
+            action_text=action_text,
             text=text,
             data=data,
         )
@@ -176,18 +231,76 @@ class DiscountOfferCandidateProvider:
         strong: str | None,
         image_alt: str | None,
         summary: re.Match[str] | None,
+        *,
+        action_text: str | None,
+        prefer_image: bool,
+        anchor_kind: str,
     ) -> str | None:
-        if image_alt and len(image_alt) <= 120:
+        # Reveal/show cards frequently contain service counters in <strong>
+        # while their logo alt carries the stable merchant label.
+        if prefer_image and image_alt and len(image_alt) <= 120:
             return image_alt
+
+        # Heading-led records derive merchant only from the semantic heading.
+        # Arbitrary surrounding text/status counters must not invent a merchant.
+        if anchor_kind == "heading":
+            patterns = (
+                r"\b(?:от|для|в)\s+([A-Za-zА-Яа-яЁё0-9. -]{2,40}?)(?:\s+на\s+|\s+по\s+|\s+-?\d|$)",
+                r"^Промокод\s+([A-Za-zА-Яа-яЁё0-9. -]{2,40}?)\s+(?:июл|август|сент|на)",
+            )
+            for pattern in patterns:
+                match = re.search(pattern, heading or "", re.IGNORECASE)
+                if match:
+                    value = match.group(1).strip(" .:-—")
+                    if value:
+                        return value[:120]
+            return None
+
+        # On action cards the human-readable `от <merchant>` segment is stronger
+        # than generic <strong> status text and is common across coupon layouts.
+        if action_text and re.search(r"\bот\b", action_text, re.IGNORECASE):
+            match = _MERCHANT_AFTER_FROM_RE.search(text)
+            if match:
+                value = match.group(1).strip(" .:-—")
+                if value:
+                    return value[:120]
+
+        if strong and _STATUS_STRONG_RE.search(strong):
+            strong = None
         if strong:
             match = _MERCHANT_FROM_STRONG_RE.search(strong)
             if match:
                 value = match.group(1).strip(" .:-—")
                 if value:
                     return value[:120]
+            if (
+                len(strong) <= 120
+                and not _BENEFIT_RE.search(strong)
+                and not _CODE_TOKEN_RE.fullmatch(strong)
+                and strong.casefold() != (action_text or "").casefold()
+            ):
+                return strong
+        if (
+            heading
+            and len(heading) <= 120
+            and not _BENEFIT_RE.search(heading)
+            and heading.casefold() != (action_text or "").casefold()
+        ):
+            return heading
         if summary:
             value = summary.group(1).strip(" .:-—")
             return value[:120] or None
+        patterns = (
+            r"\b(?:от|для|в)\s+([A-Za-zА-Яа-яЁё0-9. -]{2,40}?)(?:\s+на\s+|\s+по\s+|\s+-?\d|$)",
+            r"^Промокод\s+([A-Za-zА-Яа-яЁё0-9. -]{2,40}?)\s+(?:июл|август|сент|на)",
+            r"\bот\s+([A-Za-zА-Яа-яЁё0-9. -]{2,50})(?:$|[,.!])",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, heading or text, re.IGNORECASE)
+            if match:
+                value = match.group(1).strip(" .:-—")
+                if value:
+                    return value[:120]
         benefit = _BENEFIT_RE.search(text)
         if benefit:
             prefix = text[: benefit.start()].strip(" .:-—")
@@ -213,20 +326,41 @@ class DiscountOfferCandidateProvider:
         return (value[:300] or merchant or "Предложение")
 
     @staticmethod
-    def _promo_code(text: str, strong: str | None, data: dict[str, Any]) -> str | None:
+    def _promo_code(
+        text: str,
+        heading: str | None,
+        strong: str | None,
+        data: dict[str, Any],
+        *,
+        suppress_inference: bool,
+    ) -> str | None:
         for key in ("data-promocode", "data-promo-code"):
             value = _compact(str(data.get(key) or ""))
             if value and not re.fullmatch(r"[•*\s]+", value):
                 return value[:120]
-        # Explicit structural code-like content is stronger evidence than prose
-        # immediately following the word "промокод"; the latter may be a
-        # discount amount such as "промокодом -5000 ₽".
-        if strong and _CODE_TOKEN_RE.fullmatch(strong) and strong.upper() not in _STOP_CODES:
+        if suppress_inference:
+            return None
+        if strong and _is_inferred_code(strong):
             return strong
-        match = _CODE_AFTER_LABEL_RE.search(text)
+        tail = text
+        if heading:
+            folded_text = text.casefold()
+            folded_heading = heading.casefold()
+            position = folded_text.find(folded_heading)
+            if position >= 0:
+                tail = text[position + len(heading):]
+        match = _CODE_AFTER_LABEL_RE.search(tail)
         if match:
             value = match.group(1)
-            if value.upper() not in _STOP_CODES:
+            if _is_inferred_code(value):
+                return value
+        for match in _CODE_SCAN_RE.finditer(tail):
+            value = match.group(1)
+            if value.isdigit():
+                around = tail[max(0, match.start() - 12): min(len(tail), match.end() + 12)]
+                if re.search(r"(?:₽|руб(?:\.|лей)?|%|\bр\b)", around, re.IGNORECASE):
+                    continue
+            if _is_inferred_code(value):
                 return value
         return None
 
@@ -240,21 +374,37 @@ class DiscountOfferCandidateProvider:
         promo_code: str | None,
         percent: Decimal | None,
         record_tag: str,
+        anchor_kind: str,
+        action_text: str | None,
         text: str,
         data: dict[str, Any],
     ) -> str:
-        coupon_id = _compact(str(data.get("data-coupon-id") or ""))
-        if coupon_id.isdigit():
-            return f"{source_key}-coupon:{coupon_id}"
+        # Heading-based records and explicit URL offer IDs are semantic record
+        # identities. A nested coupon marker must not replace either. For plain
+        # action records keep coupon priority until live evidence proves a
+        # stronger generic rule; this preserves existing safe-superset parity.
+        if anchor_kind == "heading":
+            return external_id(source_url, title, promo_code)
         offer_id = parse_qs(urlsplit(source_url).query).get("offer_id", [None])[0]
         if offer_id:
             return str(offer_id)
+        explicit_promo = _compact(str(data.get("data-promocode") or data.get("data-promo-code") or ""))
+        if anchor_kind == "machine" and explicit_promo:
+            return external_id(source_url, merchant, title, promo_code or explicit_promo)
+        coupon_id = _compact(str(data.get("data-coupon-id") or ""))
+        if coupon_id.isdigit() and not heading:
+            return f"{source_key}-coupon:{coupon_id}"
+        if anchor_kind == "machine" and heading:
+            return external_id(source_url, title, promo_code)
         summary = _SUMMARY_RE.fullmatch(text)
         if summary and merchant and percent is not None:
             return external_id(source_url, merchant, str(percent))
-        if _ACTION_ACTIVATE_RE.search(text):
+        action_signal = action_text or text
+        if _ACTION_ACTIVATE_RE.search(action_signal):
             return external_id(source_url, merchant, title, promo_code or "")
-        if _ACTION_OPEN_RE.search(text):
+        if _ACTION_SHOW_RE.search(action_signal):
+            return external_id(source_url, title)
+        if _ACTION_OPEN_RE.search(action_signal):
             return external_id(source_url, merchant, title)
         if promo_code or record_tag == "article":
             return external_id(source_url, title, promo_code)
@@ -294,41 +444,46 @@ class GenericMultiRecordOfferDecoder:
         for provider, messages in sorted(result.record_provider_warnings.items()):
             warnings.extend(f"record_provider:{provider}:{message}" for message in messages)
 
-        usable = bool(result.records) and all(record.status is RecordStatus.READY for record in result.records)
+        ready_records = tuple(record for record in result.records if record.status is RecordStatus.READY)
+        usable = bool(result.records) and len(ready_records) == len(result.records)
         offers: list[RawOffer] = []
-        if usable:
-            for record in result.records:
-                values = record.values()
-                offers.append(
-                    RawOffer(
-                        source_key=source_key,
-                        external_id=str(values["external_id"]),
-                        title=str(values["title"]),
-                        source_url=str(values["source_url"]),
-                        merchant=values.get("merchant"),
-                        description=values.get("description"),
-                        conditions=values.get("conditions"),
-                        promo_code=values.get("promo_code"),
-                        discount_percent=values.get("discount_percent"),
-                        discount_amount=values.get("discount_amount"),
-                        cashback_percent=values.get("cashback_percent"),
-                        image_url=values.get("image_url"),
-                        valid_until=values.get("valid_until"),
-                        raw_payload={
-                            "text": values.get("description"),
-                            "dp_engine": {
-                                "decoder": "generic_multi_record",
-                                "record_id": record.record_id,
-                                "record_provider": record.boundary.provider,
-                                "record_source_ref": record.boundary.source_ref,
-                            },
+        seen_external_ids: set[str] = set()
+        for record in ready_records:
+            values = record.values()
+            external_id_value = str(values["external_id"])
+            if external_id_value in seen_external_ids:
+                warnings.append(f"duplicate_record_identity:{record.record_id}")
+                continue
+            seen_external_ids.add(external_id_value)
+            offers.append(
+                RawOffer(
+                    source_key=source_key,
+                    external_id=external_id_value,
+                    title=str(values["title"]),
+                    source_url=str(values["source_url"]),
+                    merchant=values.get("merchant"),
+                    description=values.get("description"),
+                    conditions=values.get("conditions"),
+                    promo_code=values.get("promo_code"),
+                    discount_percent=values.get("discount_percent"),
+                    discount_amount=values.get("discount_amount"),
+                    cashback_percent=values.get("cashback_percent"),
+                    image_url=values.get("image_url"),
+                    valid_until=values.get("valid_until"),
+                    raw_payload={
+                        "text": values.get("description"),
+                        "dp_engine": {
+                            "decoder": "generic_multi_record",
+                            "record_id": record.record_id,
+                            "record_provider": record.boundary.provider,
+                            "record_source_ref": record.boundary.source_ref,
                         },
-                    )
+                    },
                 )
-        else:
-            for record in result.records:
-                if record.status is not RecordStatus.READY:
-                    warnings.append(f"record_not_ready:{record.record_id}:{record.status.value}")
+            )
+        for record in result.records:
+            if record.status is not RecordStatus.READY:
+                warnings.append(f"record_not_ready:{record.record_id}:{record.status.value}")
         return GenericOfferDecodeResult(
             offers=tuple(offers),
             records=result,
@@ -400,8 +555,6 @@ def compare_offer_sets(
         for field_name in _PARITY_FIELDS:
             legacy_value = getattr(expected, field_name)
             if legacy_value is None:
-                # Generic extraction may safely enrich a legacy-null field. The
-                # migration gate is lossless, not artificially information-poor.
                 continue
             generic_value = getattr(candidate, field_name)
             if _parity_value(legacy_value) != _parity_value(generic_value):
