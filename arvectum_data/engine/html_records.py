@@ -253,20 +253,50 @@ def _count_descendants(node: _Node, predicate) -> int:
     return sum(1 for current in node.walk() if predicate(current))
 
 
-def _bounded_card(anchor: _Node, *, anchor_kind: str, max_chars: int = 2200) -> _Node:
-    """Resolve one strong offer anchor to a bounded record container.
+def _is_explicit_action_node(node: _Node) -> bool:
+    if node.tag not in {"a", "button"}:
+        return False
+    href = node.attrs.get("href", "")
+    if "offer_id=" in href:
+        return True
+    return bool(_ACTION_RE.search(node.text())) and not _is_navigation_node(node)
 
-    We never cross an ancestor that contains multiple anchors of the same strong
-    kind. This prevents a page/list wrapper from becoming one record and keeps
-    navigation/promotional index noise out of the record set.
+
+def _is_benefit_action_node(node: _Node) -> bool:
+    return _is_action_node(node) and not _is_explicit_action_node(node)
+
+
+def _contains_multiple_offer_units(node: _Node) -> bool:
+    """Return True when one container visibly spans more than one offer unit.
+
+    A single offer commonly exposes several *different* signals at once (for
+    example one heading + one reveal action + one machine coupon id), so summing
+    all anchors would split valid cards. Explicit actions and benefit-labelled
+    links are counted separately: one of each can belong to the same card, while
+    repetition within either category marks a list/wrapper.
     """
 
-    if anchor_kind == "heading":
-        predicate = _is_benefit_heading
-    elif anchor_kind == "machine":
-        predicate = _has_machine_marker
-    else:
-        predicate = _is_action_node
+    return any(
+        count > 1
+        for count in (
+            _count_descendants(node, _has_machine_marker),
+            _count_descendants(node, _is_offer_id_action),
+            _count_descendants(node, _is_explicit_action_node),
+            _count_descendants(node, _is_benefit_action_node),
+            _count_descendants(node, _is_benefit_heading),
+        )
+    )
+
+
+def _bounded_card(anchor: _Node, *, anchor_kind: str, max_chars: int = 2200) -> _Node:
+    """Resolve one strong offer anchor to a cross-signal-bounded card.
+
+    The boundary may contain one machine marker, one explicit action, one
+    benefit-labelled link and one benefit heading for the same offer, but it
+    never crosses an ancestor that repeats any strong signal category.
+    """
+
+    del anchor_kind
     fallback = anchor
     current = anchor.parent
     while current is not None and current.tag not in {"document", "html", "body"}:
@@ -274,7 +304,7 @@ def _bounded_card(anchor: _Node, *, anchor_kind: str, max_chars: int = 2200) -> 
         if not text or len(text) > max_chars:
             current = current.parent
             continue
-        if _count_descendants(current, predicate) > 1:
+        if _contains_multiple_offer_units(current):
             break
         fallback = current
         if current.tag in {"article", "li"}:

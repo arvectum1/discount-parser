@@ -226,3 +226,47 @@ def test_offer_word_link_is_action_signal_without_imperative_verb() -> None:
     attrs = result.records[0].asset.attributes
     assert attrs["record_anchor_kind"] == "action"
     assert attrs["record_action_href"] == "/deal"
+
+
+
+def test_cross_signal_wrapper_does_not_absorb_heading_siblings() -> None:
+    result = _records(
+        """
+        <section class='offer-list'>
+          <div class='entry'><a href='/one'><h3>Промокод Alpha 10%</h3></a></div>
+          <div class='entry'><a href='/two'><h3>Скидка Beta 20%</h3></a></div>
+          <div class='entry'><button>Открыть промокод</button></div>
+        </section>
+        """
+    )
+    assert len(result.records) == 3
+    assert all(record.asset.attributes["record_tag"] != "section" for record in result.records)
+
+
+def test_cross_signal_boundary_keeps_one_mixed_offer_together() -> None:
+    result = _records(
+        """
+        <div class='entry'>
+          <a href='/shop'><h3>Скидка 25% в Alpha</h3></a>
+          <div><span data-coupon-id='77'></span><button>Показать промокод</button></div>
+        </div>
+        """
+    )
+    assert len(result.records) == 1
+    attrs = result.records[0].asset.attributes
+    assert attrs["record_tag"] == "div"
+    assert attrs["record_heading"] == "Скидка 25% в Alpha"
+    assert attrs["record_data"]["data-coupon-id"] == "77"
+
+
+def test_machine_offer_cannot_climb_over_multiple_action_siblings() -> None:
+    result = _records(
+        """
+        <main>
+          <div class='entry'><span data-coupon-id='1'></span><a href='/one'>Получить промокод</a></div>
+          <div class='entry'><a href='/two'>Открыть промокод</a></div>
+        </main>
+        """
+    )
+    assert len(result.records) == 2
+    assert [record.asset.attributes["record_href"] for record in result.records] == ["/one", "/two"]
