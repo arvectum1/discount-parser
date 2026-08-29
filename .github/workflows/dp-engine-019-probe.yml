@@ -5,6 +5,8 @@ on:
     branches: [feat/dp-engine-019]
     paths:
       - ".github/workflows/dp-engine-019-probe.yml"
+      - "src/**"
+      - "arvectum_data/**"
 
 permissions:
   contents: read
@@ -37,66 +39,71 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
           alembic upgrade head
-      - name: Run one live production acceptance cycle
-        id: acceptance
-        shell: bash
-        run: |
-          mkdir -p output
-          set +e
-          python -m src.cli engine-acceptance \
-            --source "${{ matrix.source }}" \
-            --runs 1 \
-            --output "output/${{ matrix.source }}.json" \
-            > /dev/null
-          code=$?
-          set -e
-          printf '%s\n' "$code" > "output/${{ matrix.source }}.exit.txt"
-          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
-      - name: Print privacy-safe verdict
-        if: always()
+
+      - name: Run one live production cycle and classify parity failures
+        id: probe
         shell: bash
         run: |
           python - <<'PY'
-          import json
-          from pathlib import Path
+          from collections import Counter
+          import re
+          from src.sources.runner import run_all
+
           source = "${{ matrix.source }}"
-          path = Path("output") / f"{source}.json"
-          if not path.exists():
-              print(f"SOURCE={source} STATUS=NO_EVIDENCE")
-          else:
-              data = json.loads(path.read_text(encoding="utf-8"))
-              row = data.get("sources", [{}])[0] if data.get("sources") else {}
-              fields = {
-                  "SOURCE": source,
-                  "STATUS": row.get("status", data.get("status")),
-                  "CUSTOMER_SAFE": row.get("customer_path_safe"),
-                  "FETCHED": row.get("fetched_total"),
-                  "ERRORS": row.get("errors_total"),
-                  "SELECTED": row.get("engine_selected_urls"),
-                  "DECODED": row.get("engine_decoded_pages"),
-                  "GENERIC": row.get("engine_generic_pages"),
-                  "LEGACY": row.get("engine_legacy_pages"),
-                  "PARITY_PASS": row.get("parity_pass_pages"),
-                  "PARITY_FAIL": row.get("parity_failure_pages"),
-                  "EMERGENCY": row.get("emergency_fallback_pages"),
-                  "REASONS": ",".join(row.get("reasons", [])),
-              }
-              print(" ".join(f"{k}={v}" for k, v in fields.items()))
+          rows = run_all(only=source)
+          if len(rows) != 1:
+              raise SystemExit(f"unexpected result count for {source}: {len(rows)}")
+          row = rows[0]
+
+          kinds = Counter()
+          statuses = Counter()
+          field_mismatches = Counter()
+          count_shapes = Counter()
+          identity_gap_pages = 0
+
+          for warning in row.runtime_warnings:
+              if warning.startswith("generic_not_ready_fallback:"):
+                  kinds["not_ready"] += 1
+                  for status in ("needs_confirmation", "incomplete", "rejected"):
+                      statuses[status] += warning.count(":" + status)
+              elif warning.startswith("generic_parity_fallback:"):
+                  kinds["parity_mismatch"] += 1
+                  match = re.search(r"legacy=(\d+);generic=(\d+);matched=(\d+)", warning)
+                  if match:
+                      count_shapes[tuple(map(int, match.groups()))] += 1
+                  if ";missing=" in warning or ";extra=" in warning:
+                      identity_gap_pages += 1
+                  mismatch = warning.split(";mismatch=", 1)
+                  if len(mismatch) == 2:
+                      for item in mismatch[1].split(","):
+                          if ":" in item:
+                              field_mismatches[item.rsplit(":", 1)[-1]] += 1
+              elif warning.startswith("generic_decode_fallback:"):
+                  kinds["decode_exception"] += 1
+              elif warning.startswith("page_decode_failed:"):
+                  kinds["page_decode_failed"] += 1
+              elif warning.startswith("engine_no_offers:"):
+                  kinds["engine_no_offers"] += 1
+              elif warning.startswith("engine_failed:"):
+                  kinds["engine_failed"] += 1
+
+          print(
+              " ".join(
+                  [
+                      f"SOURCE={source}",
+                      f"FETCHED={row.fetched}",
+                      f"ERRORS={row.errors}",
+                      f"SELECTED={row.engine_selected_urls}",
+                      f"DECODED={row.engine_decoded_pages}",
+                      f"GENERIC={row.engine_generic_pages}",
+                      f"LEGACY={row.engine_legacy_pages}",
+                      f"FAILURES={row.engine_parity_failures}",
+                      "KINDS=" + repr(dict(sorted(kinds.items()))),
+                      "RECORD_STATUS=" + repr(dict(sorted(statuses.items()))),
+                      "COUNT_SHAPES=" + repr({str(k): v for k, v in sorted(count_shapes.items())}),
+                      f"IDENTITY_GAP_PAGES={identity_gap_pages}",
+                      "MISMATCH_FIELDS=" + repr(dict(sorted(field_mismatches.items()))),
+                  ]
+              )
+          )
           PY
-      - name: Upload privacy-safe source evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: dp-engine-019-${{ matrix.source }}
-          path: |
-            output/${{ matrix.source }}.json
-            output/${{ matrix.source }}.exit.txt
-          if-no-files-found: error
-          retention-days: 14
-      - name: Enforce source result
-        if: always()
-        shell: bash
-        run: |
-          code="${{ steps.acceptance.outputs.exit_code }}"
-          test -n "$code"
-          test "$code" -eq 0
