@@ -56,3 +56,69 @@ def test_duplicate_business_identity_from_two_boundaries_is_deduplicated() -> No
     assert len(result.records.records) == 2
     assert len(result.offers) == 1
     assert any(warning.startswith("duplicate_record_identity:") for warning in result.warnings)
+
+
+def test_heading_identity_beats_nested_coupon_marker() -> None:
+    html = """
+    <div>
+      <a href='/shop'><h3>Промокод Demo Shop на август</h3></a>
+      <span data-coupon-id='42'></span>
+      <p>SAVE10 действует на заказ</p>
+    </div>
+    """
+    result = GenericMultiRecordOfferDecoder().decode(html, page_url="https://example.test/offers", source_key="demo")
+    offer = result.offers[0]
+    assert offer.external_id == external_id(offer.source_url, offer.title, offer.promo_code)
+    assert offer.external_id != "demo-coupon:42"
+
+
+def test_open_action_identity_beats_nested_coupon_marker() -> None:
+    html = """
+    <article>
+      <strong>от Demo Shop</strong>
+      <h3>Скидка 25% на заказ</h3>
+      <span data-coupon-id='42'></span>
+      <a href='/go'>Открыть промокод</a>
+    </article>
+    """
+    result = GenericMultiRecordOfferDecoder().decode(html, page_url="https://example.test/offers", source_key="demo")
+    offer = result.offers[0]
+    assert offer.external_id == external_id(offer.source_url, offer.merchant, offer.title)
+    assert offer.external_id != "demo-coupon:42"
+
+
+def test_show_action_prefers_image_over_expiry_strong() -> None:
+    html = """
+    <article>
+      <img src='/logo.png' alt='Image Merchant'>
+      <strong>241 Осталось дней</strong>
+      <h3>Скидка 15% на заказ</h3>
+      <a href='/go?offer_id=77'>Показать промокод</a>
+    </article>
+    """
+    result = GenericMultiRecordOfferDecoder().decode(html, page_url="https://example.test/offers", source_key="demo")
+    offer = result.offers[0]
+    assert offer.merchant == "Image Merchant"
+    assert offer.external_id == "77"
+
+
+def test_inferred_code_rejects_prose_word_after_label() -> None:
+    html = """
+    <article>
+      <h3>Скидка 10% на заказ</h3>
+      <p>Промокод получите после перехода на сайт</p>
+    </article>
+    """
+    result = GenericMultiRecordOfferDecoder().decode(html, page_url="https://example.test/offers", source_key="demo")
+    assert result.offers[0].promo_code is None
+
+
+def test_inferred_code_keeps_code_shaped_token_after_label() -> None:
+    html = """
+    <article>
+      <h3>Скидка 10% на заказ</h3>
+      <p>Промокод SAVE10 действует на заказ</p>
+    </article>
+    """
+    result = GenericMultiRecordOfferDecoder().decode(html, page_url="https://example.test/offers", source_key="demo")
+    assert result.offers[0].promo_code == "SAVE10"
