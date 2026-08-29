@@ -1,4 +1,4 @@
-name: DP-ENGINE-019 apply field semantic remediation
+name: DP-ENGINE-019 apply narrowed field semantic remediation
 
 on:
   push:
