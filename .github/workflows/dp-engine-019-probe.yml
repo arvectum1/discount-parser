@@ -1,4 +1,4 @@
-name: DP-ENGINE-019 mixed-anchor live probe
+name: DP-ENGINE-019 apply wrapper pruning
 
 on:
   push:
@@ -8,71 +8,30 @@ on:
       - .github/workflows/dp-engine-019-probe.yml
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  live:
-    name: mixed live probe (${{ matrix.source }})
+  apply:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
-    strategy:
-      fail-fast: false
-      matrix:
-        source:
-          - promokood
-          - promokodik
-          - berikod
-          - promokodi_net_ru
-          - promko
-    env:
-      DP_DATABASE_URL: sqlite:///./dp_engine_019_${{ matrix.source }}.db
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-          cache: pip
-      - name: Install and migrate
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
-          alembic upgrade head
-      - name: Remediation regressions
+          ref: feat/dp-engine-019
+          fetch-depth: 0
+      - name: Apply staged wrapper pruning
+        run: python .github/dp_engine_019_remediate.py
+      - name: Install package
+        run: python -m pip install -e ".[dev]"
+      - name: Verify semantic regressions
         run: pytest -q tests/dp_engine/test_semantic_html_records.py tests/dp_engine/test_live_semantic_remediation.py
-      - name: Live production parity summary
+      - name: Commit product changes
         shell: bash
         run: |
-          python - <<'PY'
-          from collections import Counter
-          import re
-          from src.sources.runner import run_all
-
-          source = "${{ matrix.source }}"
-          row = run_all(only=source)[0]
-          shapes = Counter()
-          mismatches = Counter()
-          kinds = Counter()
-          for warning in row.runtime_warnings:
-              if warning.startswith("generic_parity_fallback:"):
-                  kinds["parity"] += 1
-                  match = re.search(r"legacy=(\d+);generic=(\d+);matched=(\d+)", warning)
-                  if match:
-                      shapes[tuple(map(int, match.groups()))] += 1
-                  if ";mismatch=" in warning:
-                      for item in warning.split(";mismatch=", 1)[1].split(","):
-                          if ":" in item:
-                              mismatches[item.rsplit(":", 1)[-1]] += 1
-              elif warning.startswith("generic_not_ready_fallback:"):
-                  kinds["not_ready"] += 1
-              elif warning.startswith("generic_decode_fallback:"):
-                  kinds["decode"] += 1
-          print(
-              f"SOURCE={source} FETCHED={row.fetched} ERRORS={row.errors} "
-              f"SELECTED={row.engine_selected_urls} DECODED={row.engine_decoded_pages} "
-              f"GENERIC={row.engine_generic_pages} LEGACY={row.engine_legacy_pages} "
-              f"FAILURES={row.engine_parity_failures} KINDS={dict(kinds)} "
-              f"SHAPES={dict(shapes)} MISMATCH={dict(sorted(mismatches.items()))}"
-          )
-          if row.errors:
-              raise SystemExit("production collection errors")
-          PY
+          set -euo pipefail
+          git config user.name "DP-ENGINE-019 remediation bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add arvectum_data/engine/html_records.py tests/dp_engine/test_semantic_html_records.py
+          git diff --cached --check
+          git commit -m "fix(engine): bound mixed offer cards across signal types"
+          git push origin HEAD:feat/dp-engine-019
