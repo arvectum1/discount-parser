@@ -16,7 +16,7 @@ from src.modules.offers.repository import OfferRepository
 from src.shared.db import session_scope
 from src.sources.base import RawOffer
 from src.sources.config import SourceConfig, load_source_configs
-from src.sources.engine_runtime import collect_source_offers
+from src.sources.parity_runtime import collect_source_offers_observed
 from src.sources.registry import build_adapter
 
 
@@ -35,6 +35,16 @@ class RunResult:
     engine_selected_urls: int = 0
     engine_decoded_pages: int = 0
     engine_fallback_used: bool = False
+    engine_generic_pages: int = 0
+    engine_legacy_pages: int = 0
+    engine_parity_failures: int = 0
+    engine_parity_observed_pages: int = 0
+    engine_parity_pass_pages: int = 0
+    engine_oracle_pages: int = 0
+    engine_direct_generic_pages: int = 0
+    engine_emergency_fallback_pages: int = 0
+    engine_retirement_mode_before: str = "observing"
+    engine_retirement_mode_after: str = "observing"
     runtime_warnings: tuple[str, ...] = ()
 
 
@@ -230,7 +240,7 @@ def run_source(config: SourceConfig, *, city: str | None = None, region: str | N
     config = _effective_config(config)
     started = datetime.now(UTC)
     try:
-        collection = collect_source_offers(config, adapter_factory=build_adapter)
+        collection = collect_source_offers_observed(config, adapter_factory=build_adapter)
     except Exception as exc:
         return _record_failed_collection(config, exc)
 
@@ -243,6 +253,16 @@ def run_source(config: SourceConfig, *, city: str | None = None, region: str | N
         engine_selected_urls=collection.selected_urls,
         engine_decoded_pages=collection.decoded_pages,
         engine_fallback_used=collection.fallback_used,
+        engine_generic_pages=collection.generic_pages,
+        engine_legacy_pages=collection.legacy_pages,
+        engine_parity_failures=collection.parity_failures,
+        engine_parity_observed_pages=collection.parity_observed_pages,
+        engine_parity_pass_pages=collection.parity_pass_pages,
+        engine_oracle_pages=collection.oracle_pages,
+        engine_direct_generic_pages=collection.direct_generic_pages,
+        engine_emergency_fallback_pages=collection.emergency_fallback_pages,
+        engine_retirement_mode_before=collection.retirement_mode_before,
+        engine_retirement_mode_after=collection.retirement_mode_after,
         runtime_warnings=collection.warnings,
     )
     with session_scope() as session:
