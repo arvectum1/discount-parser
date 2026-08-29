@@ -1,4 +1,4 @@
-name: DP-ENGINE-019 restore semantic test baseline
+name: DP-ENGINE-019 gate collection-heading pruning
 
 on:
   push:
@@ -11,44 +11,37 @@ permissions:
   contents: write
 
 jobs:
-  restore:
+  apply:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
           ref: feat/dp-engine-019
           fetch-depth: 0
-      - name: Restore exact prior suite and append one regression
-        shell: bash
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Apply collection-heading pruning
+        run: python .github/dp_engine_019_collection_heading.py
+      - name: Install
         run: |
-          set -euo pipefail
-          git show 9f244dfd509da70293a0c9606db2ae1094393ac3:tests/dp_engine/test_semantic_html_records.py > tests/dp_engine/test_semantic_html_records.py
-          cat >> tests/dp_engine/test_semantic_html_records.py <<'PYTEST'
-
-
-          def test_collection_heading_over_multiple_offer_links_is_not_a_record() -> None:
-              result = _records(
-                  """
-                  <section>
-                    <h2>Сейчас активны скидки</h2>
-                    <a href='/a'>Alpha до 70%</a>
-                    <a href='/b'>Beta до 25%</a>
-                    <a href='/c'>Gamma до 10%</a>
-                  </section>
-                  """
-              )
-              assert len(result.records) == 3
-              assert [record.asset.attributes["record_href"] for record in result.records] == ["/a", "/b", "/c"]
-          PYTEST
-          git diff --check
-          git diff --numstat 9f244dfd509da70293a0c9606db2ae1094393ac3 -- tests/dp_engine/test_semantic_html_records.py
-      - name: Commit restored test suite
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Verify structure and canonical fixture parity
+        run: |
+          pytest -q \
+            tests/dp_engine/test_semantic_html_records.py \
+            tests/test_source_generic_parity.py
+      - name: Commit product fix
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "DP-ENGINE-019 remediation bot"
           git config user.email "actions@users.noreply.github.com"
-          git add tests/dp_engine/test_semantic_html_records.py
-          git commit -m "test(engine): reject collection headings as offer records"
+          git add arvectum_data/engine/html_records.py
+          git diff --cached --check
+          git diff --cached --quiet && { echo "no product changes"; exit 1; }
+          git commit -m "fix(engine): reject collection headings as offer records"
           git push origin HEAD:feat/dp-engine-019
