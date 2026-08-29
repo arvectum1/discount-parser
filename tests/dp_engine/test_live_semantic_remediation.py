@@ -72,18 +72,18 @@ def test_heading_identity_beats_nested_coupon_marker() -> None:
     assert offer.external_id != "demo-coupon:42"
 
 
-def test_open_action_identity_beats_nested_coupon_marker() -> None:
+def test_url_offer_id_beats_nested_coupon_marker() -> None:
     html = """
     <article>
-      <strong>от Demo Shop</strong>
+      <img src='/logo.png' alt='Image Merchant'>
       <h3>Скидка 25% на заказ</h3>
       <span data-coupon-id='42'></span>
-      <a href='/go'>Открыть промокод</a>
+      <a href='/go?offer_id=77'>Показать промокод</a>
     </article>
     """
     result = GenericMultiRecordOfferDecoder().decode(html, page_url="https://example.test/offers", source_key="demo")
     offer = result.offers[0]
-    assert offer.external_id == external_id(offer.source_url, offer.merchant, offer.title)
+    assert offer.external_id == "77"
     assert offer.external_id != "demo-coupon:42"
 
 
