@@ -1,4 +1,4 @@
-name: DP-ENGINE-019 apply wrapper pruning
+name: DP-ENGINE-019 apply wrapper pruning v2
 
 on:
   push:
