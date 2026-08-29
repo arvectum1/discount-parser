@@ -25,6 +25,11 @@ _BENEFIT_HEADING_RE = re.compile(
     re.IGNORECASE,
 )
 _MACHINE_DATA_KEYS = {"data-coupon-id", "data-promocode", "data-promo-code"}
+_PROMO_VALUE_DATA_KEYS = {"data-promocode", "data-promo-code"}
+_VALIDITY_MARKER_RE = re.compile(
+    r"(?:срок\s+действия|остал(?:ось|ись)\s+(?:дн|час)|действует\s+до|активен\s+ещ[её]|valid\s+until|expires?)",
+    re.IGNORECASE,
+)
 _CONTROL_ACTION_RE = re.compile(
     r"(?:добавить|предложить|разместить|submit|add|share)\s+(?:свой\s+)?"
     r"(?:промокод\w*|купон\w*|скидк\w*|offer\w*|promo\w*|coupon\w*|deal\w*)",
@@ -214,10 +219,14 @@ def _has_machine_marker(node: _Node) -> bool:
     return any(node.attrs.get(key) for key in _MACHINE_DATA_KEYS)
 
 
+def _has_promo_value_marker(node: _Node) -> bool:
+    return any(node.attrs.get(key) for key in _PROMO_VALUE_DATA_KEYS)
+
+
 def _is_navigation_node(node: _Node) -> bool:
     current: _Node | None = node
     while current is not None:
-        if current.tag in {"nav", "header", "footer"}:
+        if current.tag in {"nav", "header", "footer", "aside"}:
             return True
         current = current.parent
     return False
@@ -238,15 +247,14 @@ def _is_action_node(node: _Node) -> bool:
         return False
     if _ACTION_RE.search(text):
         return True
-    # Some production sites label the actionable element with the benefit itself
-    # rather than an imperative verb. Keep this generic and bounded, and do not
-    # promote global navigation/chrome into business records.
-    return bool(
-        text
-        and len(text) <= 280
-        and _OFFER_SIGNAL_RE.search(text)
-        and (node.tag == "button" or bool(href))
-    )
+    # A bare benefit-labelled button is usually a filter/category control.
+    # Benefit-only fallback is therefore link-only; explicit buttons above remain
+    # valid offer actions.
+    if node.tag == "button":
+        return False
+    # Some production sites label the business link with the benefit itself
+    # rather than an imperative verb. Keep this generic and bounded.
+    return bool(text and len(text) <= 280 and _OFFER_SIGNAL_RE.search(text) and href)
 
 
 def _offer_id_value(node: _Node) -> str | None:
@@ -316,15 +324,33 @@ def _count_descendants(node: _Node, predicate) -> int:
     return sum(1 for current in node.walk() if predicate(current))
 
 
+def _machine_unit_identity(current: _Node) -> str | None:
+    coupon = _compact(current.attrs.get("data-coupon-id", ""))
+    if coupon:
+        return f"coupon:{coupon}"
+    promo = _compact(current.attrs.get("data-promocode", "") or current.attrs.get("data-promo-code", ""))
+    if promo:
+        return f"promo:{promo}"
+    return None
+
+
 def _unique_coupon_identity_count(node: _Node) -> int:
-    values = {
-        _compact(current.attrs.get("data-coupon-id", ""))
-        for current in node.walk()
-        if current.attrs.get("data-coupon-id")
-    }
+    # One DOM node may expose both coupon-id and promo value for the same offer.
+    # Prefer coupon-id when present, otherwise promo value. Repeated copies of the
+    # same identity stay one unit; sibling distinct promo values split a wrapper.
+    values = {value for current in node.walk() if (value := _machine_unit_identity(current))}
     if values:
         return len(values)
     return _count_descendants(node, _has_machine_marker)
+
+
+def _has_multi_machine_ancestor(node: _Node) -> bool:
+    current = node.parent
+    while current is not None and current.tag not in {"document", "html", "body"}:
+        if _unique_coupon_identity_count(current) > 1:
+            return True
+        current = current.parent
+    return False
 
 
 def _unique_offer_id_count(node: _Node) -> int:
@@ -392,11 +418,18 @@ def _bounded_card(anchor: _Node, *, anchor_kind: str, max_chars: int = 2200) -> 
         fallback = current
         if current.tag in {"article", "li"}:
             return current
+        # Validity/status text is a strong generic card-boundary marker used by
+        # promotion pages across layouts. Stop at the nearest single-offer
+        # ancestor instead of absorbing adjacent cards.
+        if _VALIDITY_MARKER_RE.search(text):
+            return current
         current = current.parent
     return fallback
 
 
 def _fallback_score(node: _Node, text: str) -> tuple[float, int] | None:
+    if _is_navigation_node(node):
+        return None
     if len(text) < 6 or not _OFFER_SIGNAL_RE.search(text):
         return None
     if node.tag == "article":
@@ -547,19 +580,36 @@ class SemanticHTMLRecordProvider:
         """
 
         groups: tuple[tuple[int, str, float, Sequence[_Node]], ...] = (
-            # Exact-card arbitration keeps reveal/action semantics when present,
-            # while a semantic heading outranks a machine-only representation.
-            # Linked headings remain above ordinary actions because their link is
-            # itself the semantic business target rather than a reveal control.
-            (10, "action", 0.99, [node for node in nodes if _is_offer_id_action(node)]),
+            # Explicit promo values are stronger than routing/reveal controls: the
+            # value-bearing node identifies the individual promotion while a
+            # surrounding action may span several promotions. URL offer IDs remain
+            # strongest when present because they are already record-specific.
+            (12, "action", 0.99, [node for node in nodes if _is_offer_id_action(node)]),
+            # A value-bearing action is already the individual card anchor and
+            # preserves action semantics. Promo-only machine nodes outrank only
+            # surrounding/broad actions.
+            (11, "action", 0.995, [
+                node for node in nodes
+                if _has_promo_value_marker(node) and _is_action_node(node)
+            ]),
+            (10, "machine", 0.995, [
+                node for node in nodes
+                if _has_promo_value_marker(node) and not _is_action_node(node)
+            ]),
             (9, "heading", 0.97, [node for node in nodes if _is_linked_benefit_heading(node)]),
             (8, "action", 0.96, [
-                node for node in nodes if _is_action_node(node) and not _is_offer_id_action(node)
+                node for node in nodes
+                if _is_action_node(node)
+                and not _is_offer_id_action(node)
+                and not _has_promo_value_marker(node)
+                and not _has_multi_machine_ancestor(node)
             ]),
             (7, "heading", 0.95, [
                 node for node in nodes if _is_benefit_heading(node) and not _is_linked_benefit_heading(node)
             ]),
-            (6, "machine", 0.99, [node for node in nodes if _has_machine_marker(node)]),
+            (6, "machine", 0.99, [
+                node for node in nodes if _has_machine_marker(node) and not _has_promo_value_marker(node)
+            ]),
         )
         proposed: list[tuple[int, _AnchoredRecord]] = []
         for priority, kind, confidence, anchors in groups:

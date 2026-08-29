@@ -122,3 +122,43 @@ def test_inferred_code_keeps_code_shaped_token_after_label() -> None:
     """
     result = GenericMultiRecordOfferDecoder().decode(html, page_url="https://example.test/offers", source_key="demo")
     assert result.offers[0].promo_code == "SAVE10"
+
+
+
+def test_status_strong_does_not_override_action_text_merchant() -> None:
+    html = """
+    <div><a href='/listing/deal'>390 от Demo Shop Промокод</a><h3>Скидка 390 рублей на покупку</h3><strong>241 Осталось дней</strong></div>
+    """
+    result = GenericMultiRecordOfferDecoder().decode(html, page_url="https://example.test/store", source_key="demo")
+    offer = result.offers[0]
+    assert offer.merchant and offer.merchant.startswith("Demo Shop Промокод")
+    assert offer.merchant != "241 Осталось дней"
+    assert offer.promo_code is None
+
+
+def test_heading_code_scan_starts_after_heading_even_with_prefix_text() -> None:
+    html = """
+    <div><span>300 ₽</span><h3>По коду скидка 300 ₽ на XIAOMI</h3><p>MTS59 активен ещё 2 дня</p></div>
+    """
+    result = GenericMultiRecordOfferDecoder().decode(html, page_url="https://example.test/store", source_key="demo")
+    offer = result.offers[0]
+    assert offer.promo_code == "MTS59"
+
+
+def test_explicit_promo_machine_identity_uses_business_fields_not_routing_coupon_id() -> None:
+    html = """
+    <div data-promocode='SAVE10'><strong>Demo</strong><h3>Скидка 10% на заказ</h3></div>
+    """
+    result = GenericMultiRecordOfferDecoder().decode(html, page_url="https://example.test/store", source_key="demo")
+    offer = result.offers[0]
+    assert offer.external_id == external_id(offer.source_url, offer.merchant, offer.title, offer.promo_code)
+
+
+def test_page_with_non_ready_record_is_not_usable() -> None:
+    html = """
+    <div data-promocode='SAVE10'><h3>Скидка 10%</h3></div>
+    <div data-coupon-id='2'>Промокод</div>
+    """
+    result = GenericMultiRecordOfferDecoder().decode(html, page_url="https://example.test/store", source_key="demo")
+    if any(record.status.value != "ready" for record in result.records.records):
+        assert result.usable is False

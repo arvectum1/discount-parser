@@ -356,3 +356,40 @@ def test_collection_heading_over_multiple_offer_links_is_not_a_record() -> None:
     )
     assert len(result.records) == 3
     assert [record.asset.attributes["record_href"] for record in result.records] == ["/a", "/b", "/c"]
+
+
+
+def test_distinct_explicit_promo_values_split_wrapper_into_records() -> None:
+    html = """
+    <section>
+      <div data-promocode="SAVE10"><h3>Скидка 10%</h3></div>
+      <div data-promocode="SAVE20"><h3>Скидка 20%</h3></div>
+      <a href="/go">Активировать промокод</a>
+    </section>
+    """
+    result = SemanticHTMLRecordProvider().records(RawAsset(asset_id="a", html=html), ())
+    values = [record.asset.attributes.get("record_data", {}) for record in result.records]
+    assert any(item.get("data-promocode") == "SAVE10" for item in values)
+    assert any(item.get("data-promocode") == "SAVE20" for item in values)
+    assert all(record.asset.attributes.get("record_text") != "Активировать промокод" for record in result.records)
+
+
+def test_bare_benefit_filter_button_is_not_offer_record() -> None:
+    html = "<section><button>Скидка</button><button>Бесплатные бонусы</button></section>"
+    result = SemanticHTMLRecordProvider().records(RawAsset(asset_id="a", html=html), ())
+    assert result.records == ()
+
+
+def test_aside_benefit_links_are_chrome_not_business_records() -> None:
+    html = "<aside><a href='/related'>Скидка 20% на соседнее предложение</a></aside>"
+    result = SemanticHTMLRecordProvider().records(RawAsset(asset_id="a", html=html), ())
+    assert result.records == ()
+
+
+def test_validity_marker_bounds_single_offer_card() -> None:
+    html = """
+    <section><div><h3>Скидка 25%</h3><a href='/deal'>Открыть акцию</a><span>Срок действия до 30.09.2026</span></div></section>
+    """
+    result = SemanticHTMLRecordProvider().records(RawAsset(asset_id="a", html=html), ())
+    assert len(result.records) == 1
+    assert "Срок действия" in result.records[0].asset.attributes["record_text"]
