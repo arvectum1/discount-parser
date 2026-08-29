@@ -72,6 +72,7 @@ def test_data_attributes_and_image_metadata_are_exposed_generically() -> None:
     assert attrs["record_image_alt"] == "Shop"
     assert attrs["record_data"]["data-coupon-id"] == "42"
     assert attrs["record_data"]["data-promocode"] == "SAVE15"
+    assert attrs["record_anchor_kind"] == "machine"
 
 
 def test_max_records_is_bounded_and_reported() -> None:
@@ -86,3 +87,62 @@ def test_max_records_is_bounded_and_reported() -> None:
 def test_non_offer_page_produces_no_records() -> None:
     result = _records("<main><h1>О компании</h1><p>Новости и контакты</p></main>")
     assert result.records == ()
+
+
+def test_machine_markers_suppress_unrelated_offer_navigation_noise() -> None:
+    result = _records(
+        """
+        <nav><ul><li><a href='/promocodes'>Все промокоды и скидки</a></li></ul></nav>
+        <main>
+          <article><h3>Скидка 20%</h3><button data-coupon-id='11'>Получить промокод</button></article>
+          <article><h3>Скидка 30%</h3><button data-coupon-id='12'>Получить промокод</button></article>
+        </main>
+        """
+    )
+    assert len(result.records) == 2
+    assert [record.asset.attributes["record_data"]["data-coupon-id"] for record in result.records] == ["11", "12"]
+
+
+def test_explicit_actions_define_cards_and_preserve_action_href() -> None:
+    result = _records(
+        """
+        <nav><a href='/promo'>Промокоды и скидки</a></nav>
+        <div class='offers'>
+          <div class='entry'><a href='/shop'>Shop</a><h3>Скидка 10%</h3><a href='/go?offer_id=1'>Показать промокод</a></div>
+          <div class='entry'><a href='/shop2'>Shop 2</a><h3>Бонус 500 ₽</h3><a href='/go?offer_id=2'>Открыть промокод</a></div>
+        </div>
+        """
+    )
+    assert len(result.records) == 2
+    assert [record.asset.attributes["record_action_href"] for record in result.records] == [
+        "/go?offer_id=1",
+        "/go?offer_id=2",
+    ]
+    assert all(record.asset.attributes["record_anchor_kind"] == "action" for record in result.records)
+
+
+def test_broad_wrapper_with_multiple_actions_is_not_one_record() -> None:
+    result = _records(
+        """
+        <section class='offer-list'>
+          <div><h3>Скидка 10%</h3><button>Открыть промокод</button></div>
+          <div><h3>Скидка 20%</h3><button>Открыть промокод</button></div>
+        </section>
+        """
+    )
+    assert len(result.records) == 2
+    assert all("offer-list" not in str(record.asset.attributes["record_attrs"].get("class", "")) for record in result.records)
+
+
+def test_benefit_headings_are_fallback_anchors_when_actions_absent() -> None:
+    result = _records(
+        """
+        <div class='list'>
+          <div><a href='/one'><h3>Промокод Shop на август</h3></a><p>Код SAVE10</p></div>
+          <div><a href='/two'><h3>Скидка 25% для Shop 2</h3></a><p>Условия акции</p></div>
+        </div>
+        """
+    )
+    assert len(result.records) == 2
+    assert [record.asset.attributes["record_action_href"] for record in result.records] == ["/one", "/two"]
+    assert all(record.asset.attributes["record_anchor_kind"] == "heading" for record in result.records)
