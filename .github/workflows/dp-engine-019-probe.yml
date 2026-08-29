@@ -1,4 +1,4 @@
-name: DP-ENGINE-019 gate collection-heading pruning
+name: DP-ENGINE-019 gate narrowed field remediation
 
 on:
   push:
@@ -23,25 +23,26 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - name: Apply collection-heading pruning
-        run: python .github/dp_engine_019_collection_heading.py
+      - name: Apply narrowed field remediation
+        run: python .github/dp_engine_019_field_remediate.py
       - name: Install
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
-      - name: Verify structure and canonical fixture parity
+      - name: Verify semantic field and canonical fixture parity
         run: |
           pytest -q \
             tests/dp_engine/test_semantic_html_records.py \
+            tests/dp_engine/test_live_semantic_remediation.py \
             tests/test_source_generic_parity.py
-      - name: Commit product fix
+      - name: Commit product field fix
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "DP-ENGINE-019 remediation bot"
           git config user.email "actions@users.noreply.github.com"
-          git add arvectum_data/engine/html_records.py
+          git add src/sources/generic_multi_record.py
           git diff --cached --check
           git diff --cached --quiet && { echo "no product changes"; exit 1; }
-          git commit -m "fix(engine): reject collection headings as offer records"
+          git commit -m "fix(engine): harden generic offer field semantics"
           git push origin HEAD:feat/dp-engine-019
