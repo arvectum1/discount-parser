@@ -1,19 +1,17 @@
-name: DP-ENGINE-019 source probes
+name: DP-ENGINE-019 identity probes
 
 on:
   push:
     branches: [feat/dp-engine-019]
     paths:
       - ".github/workflows/dp-engine-019-probe.yml"
-      - "src/**"
-      - "arvectum_data/**"
 
 permissions:
   contents: read
 
 jobs:
-  source-probe:
-    name: live probe (${{ matrix.source }})
+  identity-probe:
+    name: identity probe (${{ matrix.source }})
     runs-on: ubuntu-latest
     timeout-minutes: 12
     strategy:
@@ -21,10 +19,8 @@ jobs:
       matrix:
         source:
           - promokood
-          - promokodik
           - berikod
           - promokodi_net_ru
-          - promko
     env:
       DP_DATABASE_URL: sqlite:///./dp_engine_019_${{ matrix.source }}.db
 
@@ -39,71 +35,49 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
           alembic upgrade head
-
-      - name: Run one live production cycle and classify parity failures
-        id: probe
+      - name: Run privacy-safe identity overlap probe
         shell: bash
         run: |
           python - <<'PY'
           from collections import Counter
-          import re
+          import src.sources.engine_runtime as runtime
           from src.sources.runner import run_all
 
           source = "${{ matrix.source }}"
-          rows = run_all(only=source)
-          if len(rows) != 1:
-              raise SystemExit(f"unexpected result count for {source}: {len(rows)}")
+          counters = Counter()
+          original = runtime.compare_offer_sets
+
+          def same(legacy, generic, fields):
+              return any(all(getattr(item, field) == getattr(generic, field) for field in fields) for item in legacy)
+
+          def instrumented(legacy, generic):
+              counters["pages"] += 1
+              counters["legacy_records"] += len(legacy)
+              counters["generic_records"] += len(generic)
+              for offer in generic:
+                  counters["source_url"] += int(same(legacy, offer, ("source_url",)))
+                  counters["title"] += int(same(legacy, offer, ("title",)))
+                  counters["merchant"] += int(same(legacy, offer, ("merchant",)))
+                  counters["url_title"] += int(same(legacy, offer, ("source_url", "title")))
+                  counters["url_merchant"] += int(same(legacy, offer, ("source_url", "merchant")))
+                  counters["merchant_title"] += int(same(legacy, offer, ("merchant", "title")))
+                  counters["url_merchant_title"] += int(same(legacy, offer, ("source_url", "merchant", "title")))
+                  if offer.promo_code is not None:
+                      counters["generic_code_nonnull"] += 1
+                      counters["promo_code"] += int(same(legacy, offer, ("promo_code",)))
+                      counters["url_title_code"] += int(same(legacy, offer, ("source_url", "title", "promo_code")))
+              return original(legacy, generic)
+
+          runtime.compare_offer_sets = instrumented
+          try:
+              rows = run_all(only=source)
+          finally:
+              runtime.compare_offer_sets = original
           row = rows[0]
-
-          kinds = Counter()
-          statuses = Counter()
-          field_mismatches = Counter()
-          count_shapes = Counter()
-          identity_gap_pages = 0
-
-          for warning in row.runtime_warnings:
-              if warning.startswith("generic_not_ready_fallback:"):
-                  kinds["not_ready"] += 1
-                  for status in ("needs_confirmation", "incomplete", "rejected"):
-                      statuses[status] += warning.count(":" + status)
-              elif warning.startswith("generic_parity_fallback:"):
-                  kinds["parity_mismatch"] += 1
-                  match = re.search(r"legacy=(\d+);generic=(\d+);matched=(\d+)", warning)
-                  if match:
-                      count_shapes[tuple(map(int, match.groups()))] += 1
-                  if ";missing=" in warning or ";extra=" in warning:
-                      identity_gap_pages += 1
-                  mismatch = warning.split(";mismatch=", 1)
-                  if len(mismatch) == 2:
-                      for item in mismatch[1].split(","):
-                          if ":" in item:
-                              field_mismatches[item.rsplit(":", 1)[-1]] += 1
-              elif warning.startswith("generic_decode_fallback:"):
-                  kinds["decode_exception"] += 1
-              elif warning.startswith("page_decode_failed:"):
-                  kinds["page_decode_failed"] += 1
-              elif warning.startswith("engine_no_offers:"):
-                  kinds["engine_no_offers"] += 1
-              elif warning.startswith("engine_failed:"):
-                  kinds["engine_failed"] += 1
-
           print(
-              " ".join(
-                  [
-                      f"SOURCE={source}",
-                      f"FETCHED={row.fetched}",
-                      f"ERRORS={row.errors}",
-                      f"SELECTED={row.engine_selected_urls}",
-                      f"DECODED={row.engine_decoded_pages}",
-                      f"GENERIC={row.engine_generic_pages}",
-                      f"LEGACY={row.engine_legacy_pages}",
-                      f"FAILURES={row.engine_parity_failures}",
-                      "KINDS=" + repr(dict(sorted(kinds.items()))),
-                      "RECORD_STATUS=" + repr(dict(sorted(statuses.items()))),
-                      "COUNT_SHAPES=" + repr({str(k): v for k, v in sorted(count_shapes.items())}),
-                      f"IDENTITY_GAP_PAGES={identity_gap_pages}",
-                      "MISMATCH_FIELDS=" + repr(dict(sorted(field_mismatches.items()))),
-                  ]
-              )
+              f"SOURCE={source} FETCHED={row.fetched} ERRORS={row.errors} "
+              f"SELECTED={row.engine_selected_urls} DECODED={row.engine_decoded_pages} "
+              f"GENERIC_ACCEPTED={row.engine_generic_pages} PARITY_FAILURES={row.engine_parity_failures} "
+              + " ".join(f"{key.upper()}={value}" for key, value in sorted(counters.items()))
           )
           PY
