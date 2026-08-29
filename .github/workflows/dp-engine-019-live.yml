@@ -1,0 +1,72 @@
+name: DP-ENGINE-019 live acceptance
+
+on:
+  push:
+    branches: [feat/dp-engine-019]
+    paths:
+      - ".github/workflows/dp-engine-019-live.yml"
+      - "src/**"
+      - "arvectum_data/**"
+      - "config/**"
+      - "migrations/**"
+
+permissions:
+  contents: read
+
+jobs:
+  live-five-source:
+    name: live 5-source production acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DP_DATABASE_URL: sqlite:///./dp_engine_019_live.db
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install production package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+          alembic upgrade head
+
+      - name: Run three bounded live acceptance cycles
+        id: acceptance
+        shell: bash
+        run: |
+          mkdir -p output
+          set +e
+          python -m src.cli engine-acceptance \
+            --runs 3 \
+            --output output/dp_engine_019_live.json \
+            > output/dp_engine_019_stdout.json
+          code=$?
+          set -e
+          printf '%s\n' "$code" > output/acceptance_exit_code.txt
+          python -m src.cli parity-report > output/dp_engine_019_parity.json
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+
+      - name: Upload privacy-safe live evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dp-engine-019-live-evidence
+          path: |
+            output/dp_engine_019_live.json
+            output/dp_engine_019_parity.json
+            output/acceptance_exit_code.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Enforce live acceptance result
+        if: always()
+        shell: bash
+        run: |
+          code="${{ steps.acceptance.outputs.exit_code }}"
+          test -n "$code"
+          test "$code" -eq 0
