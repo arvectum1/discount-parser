@@ -84,6 +84,20 @@ def _compact(value: str | None) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
+def _is_inferred_code(value: str | None) -> bool:
+    token = _compact(value)
+    if not token:
+        return False
+    upper = token.upper()
+    if upper in _STOP_CODES or not _CODE_TOKEN_RE.fullmatch(upper):
+        return False
+    # Inferred values are deliberately stricter than explicit data-* values.
+    # Natural-language words after labels such as ``Промокод получите`` must
+    # never become business values. Mixed-case tokens are accepted only when
+    # they contain a digit; otherwise require an all-uppercase code shape.
+    return token == upper or any(char.isdigit() for char in token)
+
+
 def _candidate(field_key: str, value: Any, *, source_ref: str, confidence: float = 0.98) -> Candidate:
     return Candidate(
         field_key=field_key,
@@ -215,6 +229,10 @@ class DiscountOfferCandidateProvider:
         action_text: str | None,
         prefer_image: bool,
     ) -> str | None:
+        # Reveal/show cards frequently contain service counters in <strong>
+        # while their logo alt carries the stable merchant label.
+        if prefer_image and image_alt and len(image_alt) <= 120:
+            return image_alt
         if strong:
             match = _MERCHANT_FROM_STRONG_RE.search(strong)
             if match:
@@ -235,8 +253,6 @@ class DiscountOfferCandidateProvider:
             and heading.casefold() != (action_text or "").casefold()
         ):
             return heading
-        if prefer_image and image_alt and len(image_alt) <= 120:
-            return image_alt
         if summary:
             value = summary.group(1).strip(" .:-—")
             return value[:120] or None
@@ -290,7 +306,7 @@ class DiscountOfferCandidateProvider:
                 return value[:120]
         if suppress_inference:
             return None
-        if strong and _CODE_TOKEN_RE.fullmatch(strong) and strong.upper() not in _STOP_CODES:
+        if strong and _is_inferred_code(strong):
             return strong
         tail = text
         if heading and text.casefold().startswith(heading.casefold()):
@@ -298,11 +314,11 @@ class DiscountOfferCandidateProvider:
         match = _CODE_AFTER_LABEL_RE.search(tail)
         if match:
             value = match.group(1)
-            if value.upper() not in _STOP_CODES:
+            if _is_inferred_code(value):
                 return value
         for match in _CODE_SCAN_RE.finditer(tail):
             value = match.group(1)
-            if value.upper() not in _STOP_CODES:
+            if _is_inferred_code(value):
                 return value
         return None
 
@@ -321,17 +337,21 @@ class DiscountOfferCandidateProvider:
         text: str,
         data: dict[str, Any],
     ) -> str:
-        coupon_id = _compact(str(data.get("data-coupon-id") or ""))
-        if coupon_id.isdigit():
-            return f"{source_key}-coupon:{coupon_id}"
+        # Heading-based records and explicit URL offer IDs are semantic record
+        # identities. A nested coupon marker must not replace either. For plain
+        # action records keep coupon priority until live evidence proves a
+        # stronger generic rule; this preserves existing safe-superset parity.
+        if anchor_kind == "heading":
+            return external_id(source_url, title, promo_code)
         offer_id = parse_qs(urlsplit(source_url).query).get("offer_id", [None])[0]
         if offer_id:
             return str(offer_id)
+        coupon_id = _compact(str(data.get("data-coupon-id") or ""))
+        if coupon_id.isdigit():
+            return f"{source_key}-coupon:{coupon_id}"
         summary = _SUMMARY_RE.fullmatch(text)
         if summary and merchant and percent is not None:
             return external_id(source_url, merchant, str(percent))
-        if anchor_kind == "heading":
-            return external_id(source_url, title, promo_code)
         action_signal = action_text or text
         if _ACTION_ACTIVATE_RE.search(action_signal):
             return external_id(source_url, merchant, title, promo_code or "")
