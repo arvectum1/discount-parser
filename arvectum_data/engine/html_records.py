@@ -267,11 +267,38 @@ def _is_linked_benefit_heading(node: _Node) -> bool:
     return bool(href)
 
 
+def _is_collection_heading(node: _Node) -> bool:
+    """Identify a wrapper heading that labels several sibling offers.
+
+    A real offer heading may share a card with one reveal/action. A non-linked
+    heading whose surrounding container immediately exposes several independent
+    offer actions is instead collection chrome (for example ``active discounts``
+    above a list of merchant links) and must not become its own business record.
+    """
+
+    parent = node.parent
+    if parent is None or parent.tag in {"article", "li"}:
+        return False
+    if _parent_link(node)[0]:
+        return False
+    sibling_actions = 0
+    for sibling in parent.children:
+        if sibling is node:
+            continue
+        for current in sibling.walk():
+            if _is_action_node(current):
+                sibling_actions += 1
+                if sibling_actions > 1:
+                    return True
+    return False
+
+
 def _is_benefit_heading(node: _Node) -> bool:
     return (
         node.tag in {"h2", "h3", "h4"}
         and not _is_navigation_node(node)
         and not _CONTROL_ACTION_RE.search(node.text())
+        and not _is_collection_heading(node)
         and bool(_BENEFIT_HEADING_RE.search(node.text()))
     )
 
