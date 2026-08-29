@@ -204,6 +204,15 @@ def _has_machine_marker(node: _Node) -> bool:
     return any(node.attrs.get(key) for key in _MACHINE_DATA_KEYS)
 
 
+def _is_navigation_node(node: _Node) -> bool:
+    current: _Node | None = node
+    while current is not None:
+        if current.tag in {"nav", "header", "footer"}:
+            return True
+        current = current.parent
+    return False
+
+
 def _is_action_node(node: _Node) -> bool:
     if node.tag not in {"a", "button"}:
         return False
@@ -212,13 +221,14 @@ def _is_action_node(node: _Node) -> bool:
         return True
     text = node.text()
     if _ACTION_RE.search(text):
-        return True
+        return not _is_navigation_node(node)
     # Some production sites label the actionable element with the benefit itself
-    # rather than an imperative verb. Keep this generic and bounded: only links
-    # with an href and buttons qualify, and very long/navigation-like text is out.
+    # rather than an imperative verb. Keep this generic and bounded, and do not
+    # promote global navigation/chrome into business records.
     return bool(
         text
         and len(text) <= 280
+        and not _is_navigation_node(node)
         and _OFFER_SIGNAL_RE.search(text)
         and (node.tag == "button" or bool(href))
     )
@@ -424,13 +434,16 @@ class SemanticHTMLRecordProvider:
         """
 
         groups: tuple[tuple[int, str, float, Sequence[_Node]], ...] = (
-            (5, "machine", 0.99, [node for node in nodes if _has_machine_marker(node)]),
-            (5, "action", 0.99, [node for node in nodes if _is_offer_id_action(node)]),
-            (4, "heading", 0.97, [node for node in nodes if _is_linked_benefit_heading(node)]),
-            (3, "action", 0.96, [
+            # Exact-card arbitration: offer-id is strongest; a linked benefit
+            # heading carries the canonical target link; an explicit action keeps
+            # its href while still exposing machine data from the card.
+            (9, "action", 0.99, [node for node in nodes if _is_offer_id_action(node)]),
+            (8, "heading", 0.97, [node for node in nodes if _is_linked_benefit_heading(node)]),
+            (7, "action", 0.96, [
                 node for node in nodes if _is_action_node(node) and not _is_offer_id_action(node)
             ]),
-            (2, "heading", 0.94, [
+            (6, "machine", 0.99, [node for node in nodes if _has_machine_marker(node)]),
+            (5, "heading", 0.94, [
                 node for node in nodes if _is_benefit_heading(node) and not _is_linked_benefit_heading(node)
             ]),
         )
