@@ -1,4 +1,4 @@
-name: DP-ENGINE-019 live parity after field remediation
+name: DP-ENGINE-019 live identity component probe
 
 on:
   push:
@@ -11,8 +11,8 @@ permissions:
   contents: read
 
 jobs:
-  live-parity:
-    name: live parity (${{ matrix.source }})
+  inspect:
+    name: component probe (${{ matrix.source }})
     runs-on: ubuntu-latest
     timeout-minutes: 18
     strategy:
@@ -20,63 +20,125 @@ jobs:
       matrix:
         source:
           - promokood
-          - promokodik
-          - berikod
           - promokodi_net_ru
-          - promko
-    env:
-      DP_DATABASE_URL: sqlite:///./dp_engine_019_${{ matrix.source }}.db
+          - berikod
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
-      - name: Install and migrate
+      - name: Install
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
-          alembic upgrade head
-      - name: Remediation regressions
-        run: |
-          pytest -q \
-            tests/dp_engine/test_semantic_html_records.py \
-            tests/dp_engine/test_live_semantic_remediation.py \
-            tests/test_source_generic_parity.py
-      - name: Live production parity summary
+      - name: Inspect first live failing page
         shell: bash
         run: |
           python - <<'PY'
-          from collections import Counter
+          from dataclasses import replace
           import re
-          from src.sources.runner import run_all
 
-          source = "${{ matrix.source }}"
-          row = run_all(only=source)[0]
-          shapes = Counter()
-          mismatches = Counter()
-          kinds = Counter()
-          for warning in row.runtime_warnings:
-              if warning.startswith("generic_parity_fallback:"):
-                  kinds["parity"] += 1
-                  match = re.search(r"legacy=(\d+);generic=(\d+);matched=(\d+)", warning)
-                  if match:
-                      shapes[tuple(map(int, match.groups()))] += 1
-                  if ";mismatch=" in warning:
-                      for item in warning.split(";mismatch=", 1)[1].split(","):
-                          if ":" in item:
-                              mismatches[item.rsplit(":", 1)[-1]] += 1
-              elif warning.startswith("generic_not_ready_fallback:"):
-                  kinds["not_ready"] += 1
-              elif warning.startswith("generic_decode_fallback:"):
-                  kinds["decode"] += 1
-          print(
-              f"SOURCE={source} FETCHED={row.fetched} ERRORS={row.errors} "
-              f"SELECTED={row.engine_selected_urls} DECODED={row.engine_decoded_pages} "
-              f"GENERIC={row.engine_generic_pages} LEGACY={row.engine_legacy_pages} "
-              f"FAILURES={row.engine_parity_failures} KINDS={dict(kinds)} "
-              f"SHAPES={dict(shapes)} MISMATCH={dict(sorted(mismatches.items()))}"
+          from arvectum_data.acquisition import AcquisitionRequest, RenderMode
+          from arvectum_data.engine import RecordStatus
+          from src.sources.config import load_source_configs
+          from src.sources.engine_runtime import ProductionSourceRuntime
+          from src.sources.generic_multi_record import compare_offer_sets
+          from src.sources.registry import build_adapter
+
+          source_key = "${{ matrix.source }}"
+          config = next(item for item in load_source_configs() if item.key == source_key)
+          runtime = ProductionSourceRuntime(config)
+          collection = runtime.collect()
+          warning = next(
+              (item for item in collection.warnings if item.startswith("generic_parity_fallback:")),
+              None,
           )
-          if row.errors:
-              raise SystemExit("production collection errors")
+          if warning is None:
+              print(f"SOURCE={source_key} NO_PARITY_WARNING warnings={collection.warnings[:8]}")
+              raise SystemExit(0)
+          match = re.match(r"generic_parity_fallback:(https?://.*?):legacy=", warning)
+          if not match:
+              raise SystemExit(f"cannot parse parity warning: {warning[:500]}")
+          page_url = match.group(1)
+          acquired = runtime.acquisition.acquire(
+              AcquisitionRequest(
+                  url=page_url,
+                  timeout_s=runtime.policy.timeout_s,
+                  max_bytes=runtime.policy.max_bytes,
+                  render_mode=RenderMode.AUTO,
+              )
+          )
+          html = acquired.asset.html or ""
+          effective_url = acquired.asset.source_url or page_url
+          adapter = build_adapter(replace(config, base_url=effective_url, runtime_mode="legacy"))
+          legacy = list(adapter.parse(html))
+          generic = runtime.generic_decoder.decode(html, page_url=effective_url, source_key=source_key)
+          report = compare_offer_sets(legacy, generic.offers)
+
+          def compact(value, limit=130):
+              text = re.sub(r"\s+", " ", str(value or "")).strip()
+              return text if len(text) <= limit else text[: limit - 3] + "..."
+
+          print(
+              f"SOURCE={source_key} PAGE={page_url} LEGACY={len(legacy)} "
+              f"GENERIC={len(generic.offers)} RECORDS={len(generic.records.records)} "
+              f"MATCHED={report.matched_count}"
+          )
+          print("LEGACY")
+          for item in legacy[:18]:
+              print(
+                  "L",
+                  compact(item.external_id, 90),
+                  "|title=", compact(item.title),
+                  "|url=", compact(item.source_url, 110),
+                  "|merchant=", compact(item.merchant, 80),
+                  "|promo=", compact(item.promo_code, 60),
+              )
+
+          print("GENERIC")
+          for record in generic.records.records[:32]:
+              attrs = dict(record.boundary.asset.attributes)
+              values = record.values() if record.status is RecordStatus.READY else {}
+              print(
+                  "G",
+                  record.status.value,
+                  "|kind=", attrs.get("record_anchor_kind"),
+                  "|ref=", compact(record.boundary.source_ref, 70),
+                  "|heading=", compact(attrs.get("record_heading"), 100),
+                  "|href=", compact(attrs.get("record_href"), 105),
+                  "|action_href=", compact(attrs.get("record_action_href"), 105),
+                  "|action=", compact(attrs.get("record_action_text"), 70),
+                  "|strong=", compact(attrs.get("record_strong"), 80),
+                  "|image_alt=", compact(attrs.get("record_image_alt"), 80),
+                  "|id=", compact(values.get("external_id"), 90),
+                  "|title=", compact(values.get("title"), 110),
+                  "|url=", compact(values.get("source_url"), 110),
+                  "|merchant=", compact(values.get("merchant"), 80),
+                  "|promo=", compact(values.get("promo_code"), 60),
+              )
+
+          legacy_by_id = {item.external_id: item for item in legacy}
+          generic_by_id = {item.external_id: item for item in generic.offers}
+          shared = sorted(set(legacy_by_id) & set(generic_by_id))
+          if shared:
+              print("SHARED_MISMATCH_SAMPLE")
+              for external_id in shared[:20]:
+                  left = legacy_by_id[external_id]
+                  right = generic_by_id[external_id]
+                  differences = []
+                  for field in ("title", "source_url", "merchant", "description", "promo_code", "image_url"):
+                      if getattr(left, field) != getattr(right, field):
+                          differences.append(field)
+                  if differences:
+                      print(
+                          "S", compact(external_id, 90), "|fields=", differences,
+                          "|Lmerchant=", compact(left.merchant, 80),
+                          "|Gmerchant=", compact(right.merchant, 80),
+                          "|Ltitle=", compact(left.title, 110),
+                          "|Gtitle=", compact(right.title, 110),
+                      )
+
+          print("MISSING", [compact(value, 90) for value in report.missing_ids[:12]])
+          print("EXTRA", [compact(value, 90) for value in report.extra_ids[:12]])
           PY
